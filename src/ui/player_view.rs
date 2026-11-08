@@ -81,6 +81,30 @@ impl App {
             }
         }
 
+        // ---- hold-the-Subs-button picker
+        if let Some(h) = self.sub_hold.filter(|h| h.open) {
+            let opts = self.sub_options();
+            let row_h = 34.0;
+            let w = 440.0;
+            let h_px = 40.0 + row_h * opts.len() as f32 + 34.0;
+            let r = Rect::from_center_size(rect.center(), vec2(w, h_px));
+            p.rect_filled(r, 0.0, black(0.82));
+            text(&p, pos2(r.left() + 16.0, r.top() + 20.0), Align2::LEFT_CENTER, "SUBTITLES", 11.0, white(0.45));
+            for (i, (_, label, meta)) in opts.iter().enumerate() {
+                let rr = Rect::from_min_size(pos2(r.left(), r.top() + 40.0 + i as f32 * row_h), vec2(w, row_h));
+                let on = i == h.idx;
+                if on {
+                    p.rect_filled(rr, 0.0, self.pal.accent);
+                }
+                let (fg, mc) = if on { (self.pal.ink, self.pal.ink) } else { (white(0.8), white(0.45)) };
+                text_clip(&p, pos2(rr.left() + 16.0, rr.center().y), w * 0.55, label, 15.0, fg);
+                text_clip_right(&p, pos2(rr.right() - 16.0, rr.center().y), w * 0.38, meta, 12.0, mc);
+            }
+            let cap = h.input.label(self.pad_kind);
+            let hint = format!("▲▼ move · release {cap} to select · {} cancel", crate::input::PadInput::B.label(self.pad_kind));
+            text(&p, pos2(r.left() + 16.0, r.bottom() - 17.0), Align2::LEFT_CENTER, hint, 12.0, white(0.45));
+        }
+
         if !visible {
             return out;
         }
@@ -191,9 +215,9 @@ impl App {
                 (Action::Tracks, "Tracks"),
                 (Action::Back, "Back"),
             ];
-            // Right-align: measure first.
-            let est: f32 = list.iter().map(|(_, l)| l.len() as f32 * 7.8 + 50.0).sum();
-            let hx = (rect.right() - 24.0 - est).max(x + 20.0);
+            // Right-aligned with the same 24 px margin as the times above.
+            let w = self.hints_width(&p, Context::Player, list, 11.0, 14.0);
+            let hx = (rect.right() - 24.0 - w).max(x + 20.0);
             out.extend(self.hints(ui, pos2(hx, iy), Context::Player, list, 11.0, 14.0, white(0.4), white(0.1)));
         }
 

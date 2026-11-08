@@ -89,9 +89,14 @@ pub fn measure(p: &Painter, s: &str, size: f32) -> Vec2 {
 }
 
 /// A key cap like `[A]`: solid block, no border. `pos` is the left-center. Returns its rect.
-pub fn chip(p: &Painter, pos: Pos2, label: &str, size: f32, fg: Color32, bg: Color32) -> Rect {
+/// Width `chip` will use for a label.
+pub fn chip_width(p: &Painter, label: &str, size: f32) -> f32 {
     let pad = (size * 0.35).round();
-    let w = (measure(p, label, size).x + pad * 2.0).max(size * 1.7);
+    (measure(p, label, size).x + pad * 2.0).max(size * 1.7)
+}
+
+pub fn chip(p: &Painter, pos: Pos2, label: &str, size: f32, fg: Color32, bg: Color32) -> Rect {
+    let w = chip_width(p, label, size);
     let h = (size * 1.7).round();
     let r = Rect::from_min_size(pos2(pos.x, (pos.y - h / 2.0).round()), vec2(w, h));
     p.rect_filled(r, 0.0, bg);

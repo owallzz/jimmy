@@ -61,6 +61,17 @@ impl Item {
     }
 }
 
+/// Holding the Subs button: after a moment a picker opens; releasing selects.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SubHold {
+    pub input: PadInput,
+    pub since: Instant,
+    pub open: bool,
+    pub idx: usize,
+}
+
+pub(crate) const HOLD_DELAY: Duration = Duration::from_millis(300);
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Hud {
     Volume,
@@ -73,6 +84,9 @@ pub enum Step {
     Act(Action),
     /// A gamepad button press, e.g. `pad:a`, `pad:dpad_down`.
     Pad(PadInput),
+    /// Press or release separately, to test holds: `pad_down:x`, `pad_up:x`.
+    PadDown(PadInput),
+    PadUp(PadInput),
     /// A real key press, e.g. `key:j` or `key:Shift+G`.
     Key(KeyChord),
     /// Typed text, e.g. `type:moon`.
@@ -108,6 +122,7 @@ pub struct App {
     pub(crate) exploring: bool,
     /// On-screen keyboard for controllers.
     pub(crate) osk: Option<osk::Osk>,
+    pub(crate) sub_hold: Option<SubHold>,
     fake_pad: Vec<PadEvent>,
     pending_g: Option<Instant>,
     count: Option<u32>,
@@ -211,6 +226,7 @@ impl App {
             filtering: false,
             exploring: false,
             osk: None,
+            sub_hold: None,
             fake_pad: vec![],
             pending_g: None,
             count: None,
@@ -863,6 +879,28 @@ impl App {
                         }
                         continue;
                     }
+                    if let Some(h) = self.sub_hold {
+                        if h.open {
+                            match p {
+                                _ if is_direction(p) => {
+                                    self.sub_hold_move(p);
+                                    self.repeater.press(p);
+                                }
+                                PadInput::B => self.sub_hold = None,
+                                _ => {}
+                            }
+                        }
+                        self.held_pads.push(p);
+                        continue;
+                    }
+                    if self.context() == Context::Player
+                        && self.binds.pad_action(Context::Player, p) == Some(Action::NextSubtitle)
+                        && self.player.as_ref().is_some_and(|pl| pl.s.loaded)
+                    {
+                        self.sub_hold = Some(SubHold { input: p, since: Instant::now(), open: false, idx: 0 });
+                        self.held_pads.push(p);
+                        continue;
+                    }
                     if self.osk.is_some() {
                         self.osk_pad(p);
                         if is_direction(p) {
@@ -880,6 +918,15 @@ impl App {
                     self.held_pads.push(p);
                 }
                 PadEvent::Up(p) => {
+                    if let Some(h) = self.sub_hold.filter(|h| h.input == p) {
+                        self.sub_hold = None;
+                        if h.open {
+                            self.sub_hold_select(h.idx);
+                        } else {
+                            // Short tap: cycle like before.
+                            actions.push(Action::NextSubtitle);
+                        }
+                    }
                     self.repeater.release(p);
                     self.held_pads.retain(|h| *h != p);
                 }
@@ -887,6 +934,10 @@ impl App {
         }
         let (due, next) = self.repeater.due();
         for p in due {
+            if self.sub_hold.is_some_and(|h| h.open) && is_direction(p) {
+                self.sub_hold_move(p);
+                continue;
+            }
             if self.osk.is_some() {
                 if is_direction(p) {
                     self.osk_pad(p);
@@ -903,7 +954,51 @@ impl App {
         if let Some(n) = next {
             ctx.request_repaint_after(n);
         }
+        if let Some(h) = self.sub_hold.as_mut().filter(|h| !h.open) {
+            if self.screen != Screen::Player {
+                self.sub_hold = None;
+            } else if h.since.elapsed() >= HOLD_DELAY {
+                h.open = true;
+                let cur = self.player.as_ref().and_then(|p| p.s.selected(TrackKind::Sub).map(|t| t.id));
+                let opts = self.sub_options();
+                if let Some(h) = self.sub_hold.as_mut() {
+                    h.idx = opts.iter().position(|o| o.0 == cur).unwrap_or(0);
+                }
+                self.show_osd();
+            } else {
+                ctx.request_repaint_after(HOLD_DELAY - h.since.elapsed());
+            }
+        }
         actions
+    }
+
+    /// Subtitle choices for the hold picker: Off, then every track.
+    pub(crate) fn sub_options(&self) -> Vec<(Option<i64>, String, String)> {
+        let mut v = vec![(None, "Off".to_string(), String::new())];
+        if let Some(p) = &self.player {
+            v.extend(p.s.tracks_of(TrackKind::Sub).map(|t| (Some(t.id), t.label(), t.meta())));
+        }
+        v
+    }
+
+    fn sub_hold_move(&mut self, p: PadInput) {
+        use PadInput::*;
+        let n = self.sub_options().len().max(1);
+        if let Some(h) = self.sub_hold.as_mut() {
+            match p {
+                DpadUp | LstickUp | DpadLeft | LstickLeft => h.idx = (h.idx + n - 1) % n,
+                DpadDown | LstickDown | DpadRight | LstickRight => h.idx = (h.idx + 1) % n,
+                _ => {}
+            }
+        }
+    }
+
+    fn sub_hold_select(&mut self, idx: usize) {
+        let opts = self.sub_options();
+        if let (Some((id, label, _)), Some(p)) = (opts.get(idx), &self.player) {
+            p.select_track(TrackKind::Sub, *id);
+            self.toast(format!("Subtitles: {label}"));
+        }
     }
 
     pub(crate) fn dispatch(&mut self, ctx: &egui::Context, a: Action) {
@@ -1080,6 +1175,18 @@ impl App {
     }
 
     /// Draws a row of `[cap] label` hints starting at `pos` (left-center). Clicking a hint runs it.
+    /// Exact width `hints` will draw, for right-aligning a hint row.
+    pub(crate) fn hints_width(&self, p: &egui::Painter, ctx_: Context, list: &[(Action, &str)], size: f32, gap: f32) -> f32 {
+        let parts: Vec<f32> = list
+            .iter()
+            .filter_map(|(a, label)| {
+                let (cap, _) = self.glyph(ctx_, *a)?;
+                Some(draw::chip_width(p, &cap, size * 0.85) + size * 0.45 + draw::measure(p, label, size).x)
+            })
+            .collect();
+        parts.iter().sum::<f32>() + gap * parts.len().saturating_sub(1) as f32
+    }
+
     pub(crate) fn hints(&mut self, ui: &egui::Ui, pos: egui::Pos2, ctx_: Context, list: &[(Action, &str)], size: f32, gap: f32, fg: Color32, cap_bg: Color32) -> Vec<Action> {
         let p = ui.painter();
         let mut x = pos.x;
@@ -1117,6 +1224,12 @@ impl App {
                 Step::Pad(p) => {
                     self.fake_pad.push(PadEvent::Down(p));
                     self.fake_pad.push(PadEvent::Up(p));
+                    self.step_at = Instant::now() + Duration::from_millis(120);
+                    ctx.request_repaint();
+                    break;
+                }
+                Step::PadDown(p) | Step::PadUp(p) => {
+                    self.fake_pad.push(if matches!(step, Step::PadDown(_)) { PadEvent::Down(p) } else { PadEvent::Up(p) });
                     self.step_at = Instant::now() + Duration::from_millis(120);
                     ctx.request_repaint();
                     break;

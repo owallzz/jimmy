@@ -72,7 +72,7 @@ System volume works through `osascript`; there is no backlight control on macOS.
 | Seek ±10 s / ±60 s | ← → / Shift+← → | h l / H L | D-pad ◀ ▶ / LB RB |
 | Volume | ↑ ↓ | k j | D-pad ▲ ▼ |
 | Brightness | PgUp / PgDn | | right stick ▲ ▼ |
-| Subtitles / audio track | C / A | | X (□) / Y (△) |
+| Subtitles / audio track | C / A | | X (□) / Y (△); hold X (□) to pick from a list |
 | Tracks panel | T | | ≡ |
 | Stop | Backspace | q | B (○) twice |
 | Fullscreen | F11, F (player) | | View |
