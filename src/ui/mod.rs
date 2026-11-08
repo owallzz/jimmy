@@ -4,6 +4,7 @@ mod browser;
 pub mod draw;
 mod grid;
 mod osk;
+mod options;
 mod overlays;
 mod player_view;
 mod library_ui;
@@ -46,6 +47,8 @@ pub enum Overlay {
     LibraryKind,
     /// OpenSubtitles results for the playing video.
     SubDownload,
+    /// The selected row's Options menu.
+    Options,
 }
 
 /// Fix Match panel state.
@@ -90,6 +93,19 @@ impl Source {
     pub fn from_catalog(&self) -> bool {
         matches!(self, Source::Movies | Source::Shows | Source::Show(_))
     }
+}
+
+/// A show as one browser row (TV shows tab, My media).
+pub(crate) fn show_item(show: &crate::media::Show) -> Item {
+    let entry = Entry {
+        name: show.name.clone(),
+        path: show_path(&show.key),
+        is_dir: true,
+        size: show.episodes.iter().map(|(_, e)| e.size).sum(),
+        modified: show.episodes.iter().filter_map(|(_, e)| e.modified).max(),
+        subs: vec![],
+    };
+    Item { entry, hist: None, meta: None, show: Some(show.key.clone()), ep: None }
 }
 
 /// Stand-in path for a show row (rows are keyed by path).
@@ -193,6 +209,11 @@ pub struct App {
     pub(crate) catalog: crate::media::Catalog,
     /// Season shown on a show's page.
     pub(crate) season: u32,
+    /// Where a show's page was opened from, for Back.
+    show_return: Option<Source>,
+    /// Options menu entries and selection.
+    pub(crate) opt_list: Vec<(String, options::Opt)>,
+    pub(crate) opt_focus: usize,
     /// Files waiting for the "Add to playlist" picker, and its selection.
     pub(crate) pl_files: Vec<PathBuf>,
     pub(crate) pl_focus: usize,
@@ -331,6 +352,9 @@ impl App {
             all_cache: None,
             catalog: Default::default(),
             season: 1,
+            show_return: None,
+            opt_list: vec![],
+            opt_focus: 0,
             pl_files: vec![],
             pl_focus: 0,
             grid_cols: 1,
@@ -471,7 +495,7 @@ impl App {
                 self.scanner.request_all(&self.cfg.roots);
                 let cached = self.all_cache.clone();
                 if let Some(entries) = cached {
-                    let items = entries.into_iter().filter(|e| !crate::playlist::is_playlist(&e.path)).map(|e| self.item(e)).collect();
+                    let items = self.my_media_rows(entries);
                     self.set_items(items);
                 } else {
                     self.set_items(vec![]);
@@ -601,16 +625,60 @@ impl App {
         }
     }
 
+    /// My media: movies and other videos as they are, but each TV show as one row (opening
+    /// it goes to the show's page). Sorted by name.
+    pub(crate) fn my_media_rows(&self, entries: Vec<Entry>) -> Vec<Item> {
+        let mut shown = std::collections::HashSet::new();
+        let mut rows: Vec<Item> = Vec::new();
+        for e in entries {
+            if crate::playlist::is_playlist(&e.path) {
+                continue;
+            }
+            let rec = self.db.file(&e.path);
+            let show_key = rec.filter(|f| f.ep.is_some()).map(|f| f.item.clone());
+            match show_key.and_then(|k| self.catalog.show(&k)) {
+                Some(show) => {
+                    if shown.insert(show.key.clone()) {
+                        rows.push(show_item(show));
+                    }
+                }
+                // A split movie (cd1/cd2) is one row: its first part.
+                None => match rec.filter(|f| f.part.is_some()) {
+                    Some(f) => {
+                        if shown.insert(f.item.clone()) {
+                            let first = self.db.movie_parts(&e.path).into_iter().next().unwrap_or(e.path.clone());
+                            let entry = self.entry_map.get(&first).cloned().unwrap_or(e);
+                            rows.push(self.item(entry));
+                        }
+                    }
+                    None => rows.push(self.item(e)),
+                },
+            }
+        }
+        rows.sort_by_cached_key(|r| {
+            let name = if r.show.is_some() { r.entry.name.clone() } else { self.row_name(r) };
+            crate::library::natural_key(name.trim_start_matches("The "))
+        });
+        rows
+    }
+
     /// The episode to offer next: the one in progress, else the first unwatched one after the
     /// last one played, else the first unwatched, else the first.
     pub(crate) fn next_up(&self, show: &crate::media::Show) -> usize {
         let hist = |i: usize| self.hist.get(&show.episodes[i].1.path);
         let last = (0..show.episodes.len()).filter(|&i| hist(i).is_some_and(|h| h.last_played > 0)).max_by_key(|&i| hist(i).map(|h| h.last_played));
-        let unwatched = |from: usize| (from..show.episodes.len()).find(|&i| !hist(i).is_some_and(|h| h.watched));
+        // Specials (season 0) only come up once the regular seasons are all watched.
+        let regular = |i: usize| show.episodes[i].0.season > 0;
+        let unwatched = |from: usize| {
+            (from..show.episodes.len())
+                .find(|&i| regular(i) && !hist(i).is_some_and(|h| h.watched))
+                .or_else(|| (from..show.episodes.len()).find(|&i| !hist(i).is_some_and(|h| h.watched)))
+        };
+        let first_regular = (0..show.episodes.len()).find(|&i| regular(i)).unwrap_or(0);
         match last {
             Some(i) if hist(i).is_some_and(|h| h.resumable()) => i,
-            Some(i) => unwatched(i + 1).or_else(|| unwatched(0)).unwrap_or(0),
-            None => unwatched(0).unwrap_or(0),
+            Some(i) => unwatched(i + 1).or_else(|| unwatched(0)).unwrap_or(first_regular),
+            None => unwatched(0).unwrap_or(first_regular),
         }
     }
 
@@ -618,23 +686,7 @@ impl App {
     pub(crate) fn rebuild_catalog_view(&mut self) {
         let items: Vec<Item> = match self.source.clone() {
             Source::Movies => self.catalog.movies.clone().into_iter().map(|e| self.item(e)).collect(),
-            Source::Shows => self
-                .catalog
-                .shows
-                .clone()
-                .iter()
-                .map(|show| {
-                    let entry = Entry {
-                        name: show.name.clone(),
-                        path: show_path(&show.key),
-                        is_dir: true,
-                        size: show.episodes.iter().map(|(_, e)| e.size).sum(),
-                        modified: show.episodes.iter().filter_map(|(_, e)| e.modified).max(),
-                        subs: vec![],
-                    };
-                    Item { entry, hist: None, meta: None, show: Some(show.key.clone()), ep: None }
-                })
-                .collect(),
+            Source::Shows => self.catalog.shows.iter().map(show_item).collect(),
             Source::Show(key) => {
                 let Some(show) = self.catalog.show(&key).cloned() else {
                     self.set_items(vec![]);
@@ -1063,10 +1115,12 @@ impl App {
             }
             return;
         }
-        // A show's page is inside the TV shows tab, so Back goes up to the list of shows.
+        // A show's page goes back to where it was opened from (My media, Recently added…),
+        // else the list of shows.
         if let Source::Show(key) = &self.source {
             let focus = show_path(key);
-            self.open_source(Source::Shows);
+            let back = self.show_return.take().unwrap_or(Source::Shows);
+            self.open_source(back);
             if let Some(i) = self.items.iter().position(|i| i.entry.path == focus) {
                 self.focus = i;
             }
@@ -1088,6 +1142,9 @@ impl App {
     fn activate(&mut self, from_start: bool) {
         let Some(item) = self.items.get(self.focus).cloned() else { return };
         if let Some(key) = item.show {
+            if !matches!(self.source, Source::Shows | Source::Show(_)) {
+                self.show_return = Some(self.source.clone());
+            }
             self.open_source(Source::Show(key));
         } else if crate::playlist::is_playlist(&item.entry.path) {
             if from_start {
@@ -1728,6 +1785,7 @@ impl App {
             Overlay::FixMatch => return self.fix_action(a),
             Overlay::LibraryKind => return self.lib_kind_action(a),
             Overlay::SubDownload => return self.sub_dl_action(a),
+            Overlay::Options => return self.options_action(a),
             Overlay::None => {}
         }
 
@@ -1763,20 +1821,19 @@ impl App {
                 let files = self.files_for_playlist();
                 self.open_add_to_playlist(files);
             }
-            Options => match self.items.get(self.focus).cloned() {
-                Some(Item { show: Some(key), .. }) => self.play_next_up(&key),
-                Some(i) if matches!(&self.source, Source::Playlist(pl) if crate::playlist::is_own(pl)) => {
-                    if let Source::Playlist(pl) = self.source.clone() {
-                        match crate::playlist::remove(&pl, &i.entry.path) {
-                            Ok(()) => self.toast(format!("Removed from {}", crate::playlist::name(&pl))),
-                            Err(e) => self.toast(format!("Couldn't save playlist: {e}")),
-                        }
-                        self.rebuild_playlist_view();
-                    }
+            // □ / X: the Options menu (play from start, playlists, watched, fix match…).
+            Options => self.open_options(),
+            PlayFromStart => self.activate(true),
+            ToggleLibrary => {
+                if let Some(i) = self.items.get(self.focus).cloned().filter(|i| i.entry.is_dir && i.show.is_none()) {
+                    self.toggle_library(&i.entry.path);
                 }
-                Some(i) if i.entry.is_dir => self.toggle_library(&i.entry.path),
-                _ => self.activate(true),
-            },
+            }
+            PlayNext => {
+                if let Some(key) = self.items.get(self.focus).and_then(|i| i.show.clone()) {
+                    self.play_next_up(&key);
+                }
+            }
             // On a show's page, left/right (and LT/RT, [ ]) switch seasons.
             PrevTab => {
                 self.change_season(-1);
@@ -1977,6 +2034,8 @@ impl App {
             }
             (Source::Dir(_), _) => item.entry.name.clone(),
             (_, Some(_)) => self.title_of(&item.entry.path),
+            // Library movies in flat lists: their (matched) title, "Blade Runner (1982)".
+            (Source::All | Source::Added | Source::Continue | Source::Recent, None) if self.db.file(&item.entry.path).is_some() => self.title_of(&item.entry.path),
             (Source::Movies, None) => match crate::media::movie_title(&item.entry.name) {
                 (t, Some(y)) => format!("{t} ({y})"),
                 (t, None) => t,
@@ -2223,7 +2282,7 @@ impl eframe::App for App {
             if wanted {
                 self.loading = false;
                 self.list_error = l.error.clone();
-                let items = l.entries.into_iter().filter(|e| !(l.all && crate::playlist::is_playlist(&e.path))).map(|e| self.item(e)).collect();
+                let items = if l.all { self.my_media_rows(l.entries) } else { l.entries.into_iter().map(|e| self.item(e)).collect() };
                 self.set_items(items);
             }
         }
@@ -2271,6 +2330,7 @@ impl eframe::App for App {
             Overlay::FixMatch => clicked.extend(self.draw_fix(ui, rect)),
             Overlay::LibraryKind => clicked.extend(self.draw_lib_kind(ui, rect)),
             Overlay::SubDownload => clicked.extend(self.draw_sub_dl(ui, rect)),
+            Overlay::Options => clicked.extend(self.draw_options(ui, rect)),
         }
         self.osk_sync();
         if let Some(o) = self.osk {

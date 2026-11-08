@@ -61,7 +61,10 @@ actions! {
     End => "Navigate", "Last item", false;
     Accept => "Navigate", "Open / select", false;
     Back => "Navigate", "Back", false;
-    Options => "Navigate", "Options (play from start)", false;
+    Options => "Navigate", "Options menu", false;
+    PlayFromStart => "Navigate", "Play from start", false;
+    ToggleLibrary => "Library", "Add / remove library folder", false;
+    PlayNext => "Library", "Play a show's next episode", false;
     Filter => "Navigate", "Search (filter the list)", false;
     Keyboard => "Navigate", "On-screen keyboard", false;
     PrevTab => "Navigate", "Previous tab", true;

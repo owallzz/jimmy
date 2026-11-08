@@ -215,7 +215,7 @@ impl App {
                         let ne = s.episodes.len();
                         format!("{ns} season{} · {ne} episode{}", if ns == 1 { "" } else { "s" }, if ne == 1 { "" } else { "s" })
                     })
-                } else if matches!(self.source, Source::All | Source::Continue | Source::Recent) && item.ep.is_none() {
+                } else if matches!(self.source, Source::All | Source::Continue | Source::Recent) && item.ep.is_none() && self.db.file(&item.entry.path).is_none() {
                     item.entry.path.parent().and_then(|d| d.file_name()).map(|f| f.to_string_lossy().into_owned())
                 } else {
                     None
@@ -311,21 +311,11 @@ impl App {
             let hint_y = rect.bottom() - HINT_H / 2.0;
             let focused = self.items.get(self.focus);
             let on_show = focused.is_some_and(|i| i.show.is_some());
-            let on_dir = focused.map(|i| (i.entry.is_dir, self.cfg.roots.contains(&i.entry.path)));
+            let on_dir = focused.is_some_and(|i| i.entry.is_dir);
             let on_playlist = focused.is_some_and(|i| crate::playlist::is_playlist(&i.entry.path));
-            let in_own = matches!(&self.source, Source::Playlist(pl) if crate::playlist::is_own(pl));
-            let (open, opt) = match on_dir {
-                _ if on_show => ("Episodes", "Play next"),
-                _ if on_playlist => ("Open", "Play all"),
-                _ if in_own => ("Play", "Remove"),
-                Some((true, true)) => ("Open", "Remove from library"),
-                Some((true, false)) => ("Open", "Add to library"),
-                _ => ("Play", "From start"),
-            };
-            let mut list: Vec<(Action, &str)> = vec![(Action::Accept, open), (Action::Back, "Back"), (Action::Options, opt)];
-            if focused.is_some_and(|i| !i.entry.is_dir || i.show.is_some()) {
-                list.push((Action::AddToPlaylist, "Playlist"));
-            }
+            let open = if on_show { "Episodes" } else if on_dir || on_playlist { "Open" } else { "Play" };
+            // Everything else (from start, playlists, watched, fix match…) is in Options.
+            let mut list: Vec<(Action, &str)> = vec![(Action::Accept, open), (Action::Back, "Back"), (Action::Options, "Options")];
             if seasons.len() > 1 {
                 list.push((Action::NextTab, "Season"));
             }
@@ -540,18 +530,18 @@ impl App {
             let next = &show.episodes[self.next_up(show)];
             let resume = self.hist.get(&next.1.path).is_some_and(|h| h.resumable());
             vec![
-                (format!("{} {}", if resume { "▶ Resume" } else { "▶ Play" }, next.0.code()), Action::Options, true),
+                (format!("{} {}", if resume { "▶ Resume" } else { "▶ Play" }, next.0.code()), Action::PlayNext, true),
                 ("Episodes".into(), Action::Accept, false),
             ]
         } else if item.entry.is_dir {
             let in_lib = self.cfg.roots.contains(&item.entry.path);
             vec![
                 ("Open folder".into(), Action::Accept, true),
-                (if in_lib { "− Remove from library" } else { "+ Add to library" }.into(), Action::Options, false),
+                (if in_lib { "− Remove from library" } else { "+ Add to library" }.into(), Action::ToggleLibrary, false),
             ]
         } else if resumable {
             let pos = fmt_time(item.hist.as_ref().map(|h| h.pos).unwrap_or(0.0));
-            vec![(format!("▶ Resume from {pos}"), Action::Accept, true), ("↺ Play from start".into(), Action::Options, false)]
+            vec![(format!("▶ Resume from {pos}"), Action::Accept, true), ("↺ Play from start".into(), Action::PlayFromStart, false)]
         } else {
             vec![("▶ Play".into(), Action::Accept, true)]
         };

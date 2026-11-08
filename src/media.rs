@@ -182,7 +182,7 @@ fn find_nxnn(s: &str) -> Option<(usize, usize, u32, u32)> {
 }
 
 /// "Season 2", "S02", "Series 2" → 2.
-fn season_folder(name: &str) -> Option<u32> {
+pub fn season_folder(name: &str) -> Option<u32> {
     let l = name.to_ascii_lowercase();
     let rest = l.strip_prefix("season").or_else(|| l.strip_prefix("series")).or_else(|| l.strip_prefix('s'))?;
     let rest = rest.trim_matches(|c: char| c == ' ' || c == '.' || c == '_' || c == '-');

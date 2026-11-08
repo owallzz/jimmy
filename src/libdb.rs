@@ -68,9 +68,13 @@ pub struct FileRec {
     pub part: Option<u32>,
 }
 
+/// Bumped when classification changes so old records are worked out again.
+const VERSION: u32 = 2;
+
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Db {
+    pub version: u32,
     pub shows: BTreeMap<String, Item>,
     pub movies: BTreeMap<String, Item>,
     pub files: BTreeMap<PathBuf, FileRec>,
@@ -90,7 +94,16 @@ impl Db {
     }
 
     pub fn load() -> Self {
-        std::fs::read(Self::path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        let mut db: Db = std::fs::read(Self::path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        if db.version < VERSION {
+            // v2: a TV library can be a single show's folder ("Show/Season 1/…"). Re-sort
+            // every episode on the next scan (movies and downloaded art are kept).
+            db.files.retain(|_, f| f.ep.is_none());
+            db.shows.clear();
+            db.version = VERSION;
+            db.dirty = true;
+        }
+        db
     }
 
     pub fn save_if_dirty(&mut self) {
@@ -214,8 +227,15 @@ impl Db {
         let rel = path.strip_prefix(root).ok()?;
         let comps: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
         let stem = path.file_stem()?.to_string_lossy().into_owned();
-        let (folder, dirs) = if comps.len() >= 2 {
+        let is_season = |c: &str| media::season_folder(c).is_some() || c.eq_ignore_ascii_case("specials") || c.eq_ignore_ascii_case("special");
+        let (folder, dirs) = if comps.len() >= 2 && is_season(&comps[0]) {
+            // The library *is* the show's folder: "Lab Rats/Season 1/…".
+            (root.to_path_buf(), comps[..comps.len() - 1].to_vec())
+        } else if comps.len() >= 2 {
             (root.join(&comps[0]), comps[1..comps.len() - 1].to_vec())
+        } else if media::episode(path).is_some_and(|e| media::show_key(&e.show) == media::show_key(&media::folder_title(&root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()).title)) {
+            // Episodes loose in a show's own folder.
+            (root.to_path_buf(), vec![])
         } else {
             // Loose file at the library's top: group by the show name in the file name.
             let ep = media::episode(path)?;
@@ -421,6 +441,19 @@ mod tests {
         assert!(db.shows.contains_key("tv:tvmaze-180"));
         assert_eq!(db.files.len(), 1);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_show_folder_can_be_the_library() {
+        let root = std::env::temp_dir().join(format!("jimmy-db1-{}", std::process::id())).join("Lab Rats");
+        std::fs::create_dir_all(&root).unwrap();
+        let libs = vec![Library { path: root.clone(), kind: LibraryKind::Shows }];
+        let e = |p: &str| entry(&root.join(p).to_string_lossy());
+        let mut db = Db::default();
+        db.merge(&[e("Season 1/Lab Rats (2012) - s01e01 - Episode 01.mkv"), e("Season 2/Lab Rats (2012) - s02e01 - Episode 01.mkv")], &libs, 1);
+        assert_eq!(db.shows.len(), 1);
+        assert_eq!(db.shows.values().next().unwrap().title, "Lab Rats");
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
     }
 
     #[test]
