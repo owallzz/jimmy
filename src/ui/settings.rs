@@ -167,16 +167,11 @@ impl App {
                 Row::Opt(Opt::ReadaheadMem, "Read-ahead memory"),
             ],
             3 => {
-                let key = if self.cfg.opensubtitles_api_key.trim().is_empty() {
-                    "not set: add opensubtitles_api_key to config.toml".to_string()
-                } else {
-                    "set".to_string()
-                };
                 vec![
                     Row::Opt(Opt::SubScale, "Size"),
                     Row::Opt(Opt::SubBox, "Background"),
                     Row::Info("Download languages".into(), format!("{} (sub_languages in config.toml)", self.cfg.sub_languages)),
-                    Row::Info("OpenSubtitles key".into(), key),
+                    Row::Info("Downloads from".into(), "OpenSubtitles.org (no account needed)".into()),
                 ]
             }
             4 => {

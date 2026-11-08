@@ -124,8 +124,7 @@ The clock is 12-hour by default; switch to 24-hour in Settings → General.
 - **Download subtitles** on demand: hold the Subs button and pick “+ Download subtitles…”
   (also in Tracks → Subs, D, or the palette). Results come from OpenSubtitles.com, exact
   matches for your file first; the one you pick is added and selected, and comes back every
-  time you play that video. Needs a free key: `opensubtitles_api_key = "…"`; languages:
-  `sub_languages = "en,es"`.
+  time you play that video. No account or key needed. Languages: `sub_languages = "en,es"`.
 - Settings → Library → **Clear watch history** forgets positions and watched marks.
 
 ## Command line

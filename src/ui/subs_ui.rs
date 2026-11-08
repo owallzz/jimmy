@@ -33,17 +33,14 @@ impl App {
             path: video.clone(),
             languages: self.cfg.sub_languages.clone(),
             title: ep.as_ref().map(|e| e.show.clone()).unwrap_or(title),
-            year: item.as_ref().and_then(|i| i.info.year.or(i.year)),
             season: ep.as_ref().map(|e| e.season).filter(|s| *s < 1900),
             episode: ep.as_ref().map(|e| e.episode).filter(|_| ep.as_ref().is_some_and(|e| e.season < 1900)),
             imdb: item.as_ref().and_then(|i| i.info.imdb.clone()),
-            is_episode: ep.is_some(),
         };
         self.sub_dl = Some(SubDl { video, busy: true, ..Default::default() });
         self.overlay = Overlay::SubDownload;
-        let key = self.cfg.opensubtitles_api_key.clone();
         let s = self.scrape_settings();
-        self.scraper.job(crate::scrape::Job::SubSearch { query, key }, s);
+        self.scraper.job(crate::scrape::Job::SubSearch { query }, s);
     }
 
     pub(crate) fn on_sub_results(&mut self, video: PathBuf, result: Result<Vec<crate::subs::Found>, String>) {
@@ -101,9 +98,8 @@ impl App {
                     dd.busy = true;
                     dd.error = None;
                 }
-                let key = self.cfg.opensubtitles_api_key.clone();
                 let s = self.scrape_settings();
-                self.scraper.job(crate::scrape::Job::SubDownload { video: d.video, found, key }, s);
+                self.scraper.job(crate::scrape::Job::SubDownload { video: d.video, found }, s);
             }
             _ => {}
         }

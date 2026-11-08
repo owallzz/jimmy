@@ -1,14 +1,18 @@
-//! Subtitles on demand from OpenSubtitles.com (needs a free API key: `opensubtitles_api_key`).
+//! Subtitles on demand from OpenSubtitles.org, with no account or key: its older public
+//! interface (`rest.opensubtitles.org`) searches and downloads anonymously.
 //!
-//! Searches by the file's OpenSubtitles hash (exact release match) plus title / season /
-//! episode / IMDb ID. Downloaded files are kept in `<data>/subtitles/<file id>/` and added
-//! again whenever that video is played.
+//! Two searches: by the file's OpenSubtitles hash (subtitles made for this exact release),
+//! then by IMDb ID (plus season/episode) or title. Downloads arrive gzipped; ad lines the site
+//! adds to anonymous downloads are removed. Files are kept in `<data>/subtitles/<video id>/`
+//! and added again whenever that video is played.
 
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-const API: &str = "https://api.opensubtitles.com/api/v1";
+const API: &str = "https://rest.opensubtitles.org/search";
+/// The legacy API only answers registered user agents; this one is its public, keyless agent.
+const AGENT: &str = "TemporaryUserAgent";
 
 #[derive(Clone, Debug, Default)]
 pub struct Query {
@@ -16,12 +20,10 @@ pub struct Query {
     /// Comma-separated codes, e.g. "en" or "en,es".
     pub languages: String,
     pub title: String,
-    pub year: Option<u32>,
     pub season: Option<u32>,
     pub episode: Option<u32>,
     /// The movie's IMDb ID, or the show's for episodes ("tt0303461").
     pub imdb: Option<String>,
-    pub is_episode: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -33,6 +35,10 @@ pub struct Found {
     /// Made for this exact file (hash match).
     pub exact: bool,
     pub hearing_impaired: bool,
+    /// Gzipped subtitle file.
+    pub link: String,
+    /// "srt", "ass", "sub"…
+    pub format: String,
 }
 
 /// OpenSubtitles hash: file size + the first and last 64 KiB summed as little-endian u64s.
@@ -72,10 +78,6 @@ pub fn cached(video: &Path) -> Vec<PathBuf> {
     v
 }
 
-fn headers(key: &str) -> Vec<String> {
-    vec![format!("Api-Key: {key}"), format!("User-Agent: jimmy v{}", env!("CARGO_PKG_VERSION")), "Accept: application/json".into()]
-}
-
 fn enc(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
@@ -87,100 +89,137 @@ fn enc(s: &str) -> String {
     out
 }
 
-fn run(args: &[String]) -> Result<Vec<u8>, String> {
+/// GET with curl. Returns the body, or a readable error.
+fn get(url: &str) -> Result<Vec<u8>, String> {
     let out = std::process::Command::new("curl")
-        .args(["-sSL", "--max-time", "25", "--proto", "=https", "-w", "\n%{http_code}"])
-        .args(args)
+        .args(["-sSL", "--max-time", "25", "--proto", "=https", "-A", AGENT, "-H", &format!("X-User-Agent: {AGENT}"), "-w", "\n%{http_code}", url])
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|e| format!("curl: {e}"))?;
     let mut body = out.stdout;
-    // Last line is the HTTP status.
     let nl = body.iter().rposition(|b| *b == b'\n').unwrap_or(0);
     let code: u32 = String::from_utf8_lossy(&body[nl..]).trim().parse().unwrap_or(0);
     body.truncate(nl);
     match code {
         200..=299 => Ok(body),
-        401 | 403 => Err("OpenSubtitles refused the API key".into()),
-        406 | 429 => Err(message(&body).unwrap_or_else(|| "OpenSubtitles download limit reached for today".into())),
         0 => Err("Couldn't reach OpenSubtitles (offline?)".into()),
-        c => Err(message(&body).unwrap_or_else(|| format!("OpenSubtitles error {c}"))),
+        407 | 429 => Err("OpenSubtitles download limit reached; try again later".into()),
+        c => Err(format!("OpenSubtitles didn't answer (error {c})")),
     }
 }
 
-fn message(body: &[u8]) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_slice(body).ok()?;
-    v["message"].as_str().or_else(|| v["errors"][0].as_str()).map(String::from)
+/// "en,es" → "eng,spa" (the legacy API wants ISO 639-2 codes).
+fn languages(list: &str) -> String {
+    let map = |c: &str| -> String {
+        let c = c.trim().to_ascii_lowercase();
+        let three = match c.as_str() {
+            "en" => "eng", "es" => "spa", "fr" => "fre", "de" => "ger", "it" => "ita", "pt" => "por", "pb" => "pob",
+            "nl" => "dut", "sv" => "swe", "no" | "nb" => "nor", "da" => "dan", "fi" => "fin", "pl" => "pol", "ru" => "rus",
+            "uk" => "ukr", "ja" => "jpn", "zh" => "chi", "ko" => "kor", "ar" => "ara", "tr" => "tur", "el" => "ell",
+            "he" => "heb", "cs" => "cze", "hu" => "hun", "ro" => "rum", "bg" => "bul", "hr" => "hrv", "sr" => "scc",
+            "sk" => "slo", "sl" => "slv", "id" => "ind", "vi" => "vie", "th" => "tha", "hi" => "hin", "fa" => "per",
+            other => return other.to_string(),
+        };
+        three.to_string()
+    };
+    let v: Vec<String> = list.split(',').filter(|c| !c.trim().is_empty()).map(map).collect();
+    if v.is_empty() { "eng".into() } else { v.join(",") }
 }
 
-pub fn search(q: &Query, key: &str) -> Result<Vec<Found>, String> {
-    if key.trim().is_empty() {
-        return Err("Downloading subtitles needs an OpenSubtitles API key (opensubtitles_api_key in config.toml)".into());
-    }
-    // Parameters must be lowercase and in alphabetical order (the API redirects otherwise).
-    let mut params: Vec<(String, String)> = vec![("languages".into(), q.languages.to_ascii_lowercase().replace(' ', ""))];
-    if let Some(h) = hash(&q.path) {
-        params.push(("moviehash".into(), h));
-    }
-    // IMDb IDs go without the "tt" and leading zeros.
-    let imdb = q.imdb.as_deref().map(|i| i.trim_start_matches("tt").trim_start_matches('0').to_string()).filter(|i| !i.is_empty());
-    match (q.is_episode, imdb) {
-        (true, Some(id)) => params.push(("parent_imdb_id".into(), id)),
-        (false, Some(id)) => params.push(("imdb_id".into(), id)),
-        _ => params.push(("query".into(), q.title.to_lowercase())),
-    }
-    if let Some(s) = q.season {
-        params.push(("season_number".into(), s.to_string()));
-    }
-    if let Some(e) = q.episode {
-        params.push(("episode_number".into(), e.to_string()));
-    }
-    if let (Some(y), false) = (q.year, q.is_episode) {
-        params.push(("year".into(), y.to_string()));
-    }
-    params.sort();
-    let qs: Vec<String> = params.iter().map(|(k, v)| format!("{k}={}", enc(v))).collect();
-    let mut args: Vec<String> = headers(key).into_iter().flat_map(|h| ["-H".to_string(), h]).collect();
-    args.push(format!("{API}/subtitles?{}", qs.join("&")));
-    let body = run(&args)?;
-    let v: serde_json::Value = serde_json::from_slice(&body).map_err(|_| "OpenSubtitles sent something unexpected".to_string())?;
-    let mut list: Vec<Found> = v["data"]
-        .as_array()
+fn parse(body: &[u8]) -> Vec<Found> {
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(body) else { return vec![] };
+    let s = |x: &serde_json::Value| x.as_str().unwrap_or("").to_string();
+    v.as_array()
         .into_iter()
         .flatten()
         .filter_map(|d| {
-            let a = &d["attributes"];
             Some(Found {
-                file_id: a["files"][0]["file_id"].as_u64()?,
-                language: a["language"].as_str().unwrap_or("").to_string(),
-                release: a["release"].as_str().or(a["files"][0]["file_name"].as_str()).unwrap_or("").to_string(),
-                downloads: a["download_count"].as_u64().unwrap_or(0),
-                exact: a["moviehash_match"].as_bool().unwrap_or(false),
-                hearing_impaired: a["hearing_impaired"].as_bool().unwrap_or(false),
+                file_id: s(&d["IDSubtitleFile"]).parse().ok()?,
+                language: s(&d["ISO639"]),
+                release: s(&d["SubFileName"]),
+                downloads: s(&d["SubDownloadsCnt"]).parse().unwrap_or(0),
+                exact: d["MatchedBy"] == "moviehash",
+                hearing_impaired: d["SubHearingImpaired"] == "1",
+                link: d["SubDownloadLink"].as_str().filter(|l| l.starts_with("https://"))?.to_string(),
+                format: s(&d["SubFormat"]),
             })
         })
-        .collect();
-    // Exact-file matches first, then the most downloaded.
-    list.sort_by(|a, b| b.exact.cmp(&a.exact).then(b.downloads.cmp(&a.downloads)));
-    Ok(list)
+        .collect()
+}
+
+pub fn search(q: &Query) -> Result<Vec<Found>, String> {
+    let lang = format!("sublanguageid-{}", languages(&q.languages));
+    let mut found = Vec::new();
+    let mut errors = Vec::new();
+    // 1. Made for this exact file (path segments must be in alphabetical order).
+    if let (Some(h), Ok(size)) = (hash(&q.path), std::fs::metadata(&q.path).map(|m| m.len())) {
+        match get(&format!("{API}/moviebytesize-{size}/moviehash-{h}/{lang}")) {
+            Ok(b) => found.extend(parse(&b)),
+            Err(e) => errors.push(e),
+        }
+    }
+    // 2. By IMDb ID (the show's, with season/episode), else by title.
+    let imdb = q.imdb.as_deref().map(|i| i.trim_start_matches("tt").to_string()).filter(|i| !i.is_empty());
+    let url = match (imdb, q.season, q.episode) {
+        (Some(id), Some(s), Some(e)) => format!("{API}/episode-{e}/imdbid-{id}/season-{s}/{lang}"),
+        (Some(id), _, _) => format!("{API}/imdbid-{id}/{lang}"),
+        (None, Some(s), Some(e)) => format!("{API}/episode-{e}/query-{}/season-{s}/{lang}", enc(&q.title.to_lowercase())),
+        (None, _, _) => format!("{API}/query-{}/{lang}", enc(&q.title.to_lowercase())),
+    };
+    match get(&url) {
+        Ok(b) => found.extend(parse(&b)),
+        Err(e) => errors.push(e),
+    }
+    if found.is_empty() {
+        if let Some(e) = errors.into_iter().next() {
+            return Err(e);
+        }
+    }
+    // One row per file; exact matches first, then the most downloaded.
+    let mut seen = std::collections::HashSet::new();
+    found.sort_by(|a, b| b.exact.cmp(&a.exact).then(b.downloads.cmp(&a.downloads)));
+    found.retain(|f| seen.insert(f.file_id));
+    Ok(found)
+}
+
+/// Drops the cues OpenSubtitles adds to anonymous downloads ("Watch … at osdb.link").
+fn strip_ads(text: &str) -> String {
+    let ad = |block: &str| {
+        let l = block.to_lowercase();
+        ["osdb.link", "opensubtitles", "watch online movies", "advertise your product"].iter().any(|w| l.contains(w))
+    };
+    let normalized = text.replace("\r\n", "\n");
+    normalized.split("\n\n").filter(|b| !ad(b)).collect::<Vec<_>>().join("\n\n")
 }
 
 /// Downloads one subtitle into the video's cache folder. Returns the saved file.
-pub fn download(video: &Path, found: &Found, key: &str) -> Result<PathBuf, String> {
-    let mut args: Vec<String> = headers(key).into_iter().flat_map(|h| ["-H".to_string(), h]).collect();
-    args.extend(["-H".into(), "Content-Type: application/json".into(), "-X".into(), "POST".into(), "-d".into(), format!("{{\"file_id\":{}}}", found.file_id)]);
-    args.push(format!("{API}/download"));
-    let body = run(&args)?;
-    let v: serde_json::Value = serde_json::from_slice(&body).map_err(|_| "OpenSubtitles sent something unexpected".to_string())?;
-    let link = v["link"].as_str().ok_or_else(|| message(&body).unwrap_or_else(|| "No download link".into()))?;
-    let name = v["file_name"].as_str().unwrap_or("subtitle.srt");
-    let ext = Path::new(name).extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| "srt".into());
-    let text = run(&[link.to_string()])?;
+pub fn download(video: &Path, found: &Found) -> Result<PathBuf, String> {
+    let gz = get(&found.link)?;
+    // Unpack with the system gzip (on every macOS and Fedora install).
+    let mut child = std::process::Command::new("gzip")
+        .args(["-dc"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("gzip: {e}"))?;
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take().ok_or("gzip: no input")?;
+        stdin.write_all(&gz).map_err(|e| format!("gzip: {e}"))?;
+    }
+    let out = child.wait_with_output().map_err(|e| format!("gzip: {e}"))?;
+    if !out.status.success() || out.stdout.is_empty() {
+        return Err("The subtitle file was damaged; try another one".into());
+    }
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let ext = if found.format.is_empty() { "srt".to_string() } else { found.format.to_ascii_lowercase() };
+    let body = if ext == "srt" { strip_ads(&text) } else { text };
     let dir = cache_dir(video);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let lang = if found.language.is_empty() { "und".into() } else { found.language.clone() };
     let path = dir.join(format!("{lang}.{}.{ext}", found.file_id));
-    std::fs::write(&path, text).map_err(|e| e.to_string())?;
+    std::fs::write(&path, body).map_err(|e| e.to_string())?;
     Ok(path)
 }
 
@@ -199,5 +238,13 @@ mod tests {
         assert_eq!(hash(&p), Some(format!("{expect:016x}")));
         std::fs::remove_file(p).unwrap();
         assert_eq!(enc("the office"), "the%20office");
+    }
+
+    #[test]
+    fn languages_and_ads() {
+        assert_eq!(languages("en, es"), "eng,spa");
+        assert_eq!(languages(""), "eng");
+        let srt = "1\n00:00:06,000 --> 00:00:12,074\nWatch Online Movies and Series for FREE\nwww.osdb.link/lm\n\n2\n00:03:38,425 --> 00:03:39,968\nCheck, charge or cash?\n";
+        assert_eq!(strip_ads(srt), "2\n00:03:38,425 --> 00:03:39,968\nCheck, charge or cash?\n");
     }
 }

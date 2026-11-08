@@ -99,9 +99,9 @@ pub enum Job {
     /// Fix Match: use this result (a `Candidate::id`).
     Apply { req: MatchReq, id: String },
     /// Subtitles: search OpenSubtitles for a video.
-    SubSearch { query: crate::subs::Query, key: String },
+    SubSearch { query: crate::subs::Query },
     /// Subtitles: download one result.
-    SubDownload { video: PathBuf, found: crate::subs::Found, key: String },
+    SubDownload { video: PathBuf, found: crate::subs::Found },
 }
 
 pub enum Done {
@@ -157,9 +157,9 @@ impl Scraper {
                             let info = online.map(|o| merge(local.clone(), o)).unwrap_or(local);
                             Done::Matched { key: req.key, id: Some(id), info: stamp(info), manual: true }
                         }
-                        Job::SubSearch { query, key } => Done::SubResults { video: query.path.clone(), result: crate::subs::search(&query, &key) },
-                        Job::SubDownload { video, found, key } => {
-                            let result = crate::subs::download(&video, &found, &key);
+                        Job::SubSearch { query } => Done::SubResults { video: query.path.clone(), result: crate::subs::search(&query) },
+                        Job::SubDownload { video, found } => {
+                            let result = crate::subs::download(&video, &found);
                             Done::SubSaved { video, result }
                         }
                     };

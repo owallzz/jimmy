@@ -387,7 +387,10 @@ impl Player {
 
     /// Load an external subtitle file into the current video (and switch to it if `select`).
     pub fn add_sub(&self, path: &Path, select: bool) {
-        self.cmd("sub-add", &[&path.to_string_lossy(), if select { "select" } else { "auto" }]);
+        // Downloaded files are named "<lang>.<id>.srt": label the track with its language.
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let lang = name.split('.').next().unwrap_or("").to_string();
+        self.cmd("sub-add", &[&path.to_string_lossy(), if select { "select" } else { "auto" }, "downloaded", &lang]);
         if select {
             self.set("sub-visibility", "yes");
         }

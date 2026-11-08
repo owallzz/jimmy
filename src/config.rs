@@ -102,8 +102,6 @@ pub struct Config {
     /// Look up posters, titles and descriptions online (TVmaze for shows, Wikipedia and
     /// Wikidata for movies; no keys needed).
     pub online_metadata: bool,
-    /// OpenSubtitles.com API key, for downloading subtitles on demand. Optional.
-    pub opensubtitles_api_key: String,
     /// Subtitle languages to download, comma-separated codes ("en", "en,es").
     pub sub_languages: String,
     /// Extra raw mpv options, applied last.
@@ -205,7 +203,6 @@ impl Default for Config {
             autoplay_countdown: 10,
             grid_view: false,
             online_metadata: true,
-            opensubtitles_api_key: String::new(),
             sub_languages: "en".into(),
             mpv_options: HashMap::new(),
         }
