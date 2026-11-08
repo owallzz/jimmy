@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=jimmy
+GenericName=Media Player
+Comment=Lightweight media player
+Exec=jimmy %F
+Icon=jimmy
+Terminal=false
+Categories=AudioVideo;Video;Player;
+Keywords=movie;video;player;mpv;
+MimeType=video/x-matroska;video/mp4;video/x-m4v;video/x-msvideo;video/webm;video/mpeg;video/quicktime;video/x-flv;video/x-ms-wmv;video/ogg;video/3gpp;video/mp2t;video/x-ogm+ogg;audio/mpeg;audio/flac;audio/ogg;
+StartupWMClass=jimmy
+StartupNotify=true
