@@ -36,6 +36,8 @@ impl Key {
 pub(crate) enum OskTarget {
     Filter,
     Palette,
+    /// The Fix Match search box.
+    FixMatch,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -97,6 +99,7 @@ impl App {
     fn osk_text(&mut self) -> &mut String {
         match self.osk.map(|o| o.target) {
             Some(OskTarget::Palette) => &mut self.palette_query,
+            Some(OskTarget::FixMatch) => &mut self.fix.get_or_insert_with(Default::default).query,
             _ => &mut self.filter,
         }
     }
@@ -104,6 +107,11 @@ impl App {
     fn osk_changed(&mut self) {
         match self.osk.map(|o| o.target) {
             Some(OskTarget::Palette) => self.palette_focus = 0,
+            Some(OskTarget::FixMatch) => {
+                if let Some(f) = self.fix.as_mut() {
+                    f.focus = 0;
+                }
+            }
             _ => {
                 self.apply_filter();
                 self.focus = 0;
@@ -119,7 +127,15 @@ impl App {
                 self.osk_text().pop();
             }
             Key::Clear => self.osk_text().clear(),
-            Key::Done => return self.close_osk(),
+            Key::Done => {
+                // Done on the Fix Match keyboard runs the search.
+                let fix = self.osk.is_some_and(|o| o.target == OskTarget::FixMatch);
+                self.close_osk();
+                if fix {
+                    self.dispatch_fix_search();
+                }
+                return;
+            }
         }
         self.osk_changed();
     }
@@ -149,6 +165,7 @@ impl App {
         match self.osk.map(|o| o.target) {
             Some(OskTarget::Filter) if !self.filtering || self.overlay != Overlay::None => self.close_osk(),
             Some(OskTarget::Palette) if self.overlay != Overlay::Palette => self.osk = None,
+            Some(OskTarget::FixMatch) if self.overlay != Overlay::FixMatch => self.osk = None,
             _ => {}
         }
     }
@@ -170,6 +187,7 @@ impl App {
         let (label, typed) = match osk.target {
             OskTarget::Filter => ("SEARCH", self.filter.clone()),
             OskTarget::Palette => ("COMMAND", self.palette_query.clone()),
+            OskTarget::FixMatch => ("SEARCH TMDB", self.fix.as_ref().map(|f| f.query.clone()).unwrap_or_default()),
         };
         let ty = r.top() + pad + 15.0;
         let lr = text(&p, pos2(r.left() + pad, ty), Align2::LEFT_CENTER, label, 11.0, pal.faint);

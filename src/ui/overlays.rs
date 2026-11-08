@@ -43,6 +43,7 @@ impl App {
             MenuItem::Source(Source::All, "My media".into(), self.all_cache.as_ref().map(|c| c.len())),
             MenuItem::Source(Source::Shows, "TV shows".into(), self.all_cache.as_ref().map(|_| self.catalog.shows.len())),
             MenuItem::Source(Source::Movies, "Movies".into(), self.all_cache.as_ref().map(|_| self.catalog.movies.len())),
+            MenuItem::Source(Source::Added, "Recently added".into(), None),
             MenuItem::Source(Source::Continue, "Continue watching".into(), Some(self.hist.recent(true).len())),
             MenuItem::Source(Source::Recent, "Recently played".into(), None),
             MenuItem::Source(Source::Playlists, "Playlists".into(), None),
@@ -145,6 +146,7 @@ impl App {
                         MenuItem::Source(Source::Recent, l, c) => ("◷", l.clone(), *c),
                         MenuItem::Source(Source::Shows | Source::Show(_), l, c) => ("▥", l.clone(), *c),
                         MenuItem::Source(Source::Movies, l, c) => ("▣", l.clone(), *c),
+                        MenuItem::Source(Source::Added, l, c) => ("+", l.clone(), *c),
                         MenuItem::Source(Source::Playlists | Source::Playlist(_), l, c) => ("≣", l.clone(), *c),
                         MenuItem::Source(Source::Dir(_), l, c) => ("▤", l.clone(), *c),
                         MenuItem::Browse => ("+", "Browse computer…".into(), None),
@@ -368,7 +370,7 @@ impl App {
         let mut v = Vec::new();
         match self.tracks_tab {
             0 => {
-                let eps: Vec<Option<crate::media::Episode>> = self.queue.iter().map(|p| crate::media::episode(p)).collect();
+                let eps: Vec<Option<crate::media::Episode>> = self.queue.iter().map(|p| self.episode_of(p)).collect();
                 if self.queue.len() > 1 {
                     let mut season = None;
                     for (i, path) in self.queue.iter().enumerate() {
@@ -546,7 +548,7 @@ impl App {
         // tabs
         let tr = Rect::from_min_size(r.min, vec2(w, 42.0));
         p.rect_filled(tr, 0.0, pal.bg);
-        let is_show = self.queue.len() > 1 && self.queue.iter().all(|p| crate::media::episode(p).is_some());
+        let is_show = self.queue.len() > 1 && self.queue.iter().all(|p| self.episode_of(p).is_some());
         let tabs = [if is_show { "EPISODES" } else { "QUEUE" }, "SUBS", "AUDIO", "VIDEO"];
         let lb = self.glyph(Context::List, Action::PrevTab).map(|g| g.0).unwrap_or_default();
         let rb = self.glyph(Context::List, Action::NextTab).map(|g| g.0).unwrap_or_default();

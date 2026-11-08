@@ -1,16 +1,17 @@
-//! Posters, titles and descriptions for shows and movies.
+//! Posters, art, titles and descriptions for shows and movies, and Fix Match searches.
 //!
-//! Local files come first and need no network: Kodi/Jellyfin-style `tvshow.nfo`, `movie.nfo`
-//! or `<name>.nfo`, and `poster.jpg` / `folder.jpg` / `<name>-poster.jpg` next to the media.
-//! Online lookups (optional): TVmaze for shows (no key needed) and TMDB for movies (needs
-//! `tmdb_api_key`). Requests go through the system `curl`, so jimmy carries no TLS stack.
+//! Local files come first and need no network: Kodi/Jellyfin/Plex-style `tvshow.nfo`,
+//! `movie.nfo` / `<name>.nfo`, `poster.jpg` / `folder.jpg`, `fanart.jpg` / `background.jpg`
+//! and `season01-poster.jpg` next to the media. Online: TMDB for movies and shows (needs
+//! `tmdb_api_key`); without a key, shows still get TVmaze. Folder ID hints (`{tmdb-…}`,
+//! `{tvdb-…}`, `{imdb-…}`) skip the search. Requests go through the system `curl`.
 //!
-//! Only what the user looks at is looked up, one at a time on an idle-priority thread.
-//! Posters are shrunk once to small PNGs in `<data>/posters/`, so drawing them is cheap.
-//! Everything is cached in `<data>/metadata.json`; failed lookups retry after a few days.
+//! Two idle-priority threads: one matches and fetches details, the other downloads images
+//! only when they're about to be shown (posters, season posters, episode stills, backdrops)
+//! and shrinks them once to small PNGs in `<data>/posters/`.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -20,6 +21,16 @@ pub struct EpInfo {
     pub title: String,
     pub overview: String,
     pub aired: String,
+    /// Episode still (URL or local file).
+    pub still: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SeasonInfo {
+    pub name: String,
+    pub overview: String,
+    pub poster: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -31,14 +42,14 @@ pub struct Info {
     /// Out of 10.
     pub rating: Option<f32>,
     pub genres: Vec<String>,
-    /// Small PNG made from the poster.
-    pub poster: Option<PathBuf>,
-    /// Where it came from: "local", "TVmaze", "TMDB".
+    /// Image sources: a URL or a local file. `Db::image` gives the downloaded thumbnail.
+    pub poster: Option<String>,
+    pub backdrop: Option<String>,
+    /// Where it came from: "local", "TMDB", "TVmaze".
     pub source: String,
+    pub seasons: BTreeMap<u32, SeasonInfo>,
     /// "season x episode" → details.
     pub episodes: HashMap<String, EpInfo>,
-    /// Nothing found (or offline); try again after a while.
-    pub missing: bool,
     pub fetched: u64,
 }
 
@@ -46,90 +57,50 @@ pub fn ep_key(season: u32, episode: u32) -> String {
     format!("{season}x{episode}")
 }
 
-/// What to look up.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Query {
-    /// Show name and its folder (for local tvshow.nfo / poster.jpg).
-    Show { name: String, dir: Option<PathBuf> },
-    /// Movie title, year, and the file (for local .nfo / posters next to it).
-    Movie { title: String, year: Option<u32>, file: PathBuf },
+/// One show or movie to match.
+#[derive(Clone, Debug)]
+pub struct MatchReq {
+    pub key: String,
+    pub show: bool,
+    pub title: String,
+    pub year: Option<u32>,
+    pub tmdb: Option<u64>,
+    pub tvdb: Option<u64>,
+    pub imdb: Option<String>,
+    /// Show folder or movie folder (for local .nfo and artwork).
+    pub folder: Option<PathBuf>,
+    /// A movie's file (for `<name>.nfo` / `<name>-poster.jpg`).
+    pub file: Option<PathBuf>,
 }
 
-impl Query {
-    pub fn key(&self) -> String {
-        match self {
-            Query::Show { name, .. } => format!("show:{}", crate::media::show_key(name)),
-            Query::Movie { title, year, .. } => format!("movie:{}:{}", crate::media::show_key(title), year.unwrap_or(0)),
-        }
-    }
+/// A Fix Match search result.
+#[derive(Clone, Debug)]
+pub struct Candidate {
+    pub tmdb: u64,
+    pub title: String,
+    pub year: Option<u32>,
+    pub overview: String,
 }
 
-#[derive(Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Cache {
-    items: HashMap<String, Info>,
-    #[serde(skip)]
-    dirty: bool,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ImgKind {
+    Poster,
+    Still,
+    Backdrop,
 }
 
-impl Cache {
-    pub fn path() -> PathBuf {
-        crate::config::data_dir().join("metadata.json")
-    }
-
-    pub fn load() -> Self {
-        std::fs::read(Self::path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
-    }
-
-    pub fn get(&self, key: &str) -> Option<&Info> {
-        self.items.get(key).filter(|i| !i.missing)
-    }
-
-    /// Known (found, or recently tried and not found).
-    pub fn settled(&self, key: &str) -> bool {
-        const RETRY: u64 = 3 * 24 * 3600;
-        self.items.get(key).is_some_and(|i| !i.missing || crate::config::now_unix() < i.fetched + RETRY)
-    }
-
-    pub fn insert(&mut self, key: String, info: Info) {
-        self.items.insert(key, info);
-        self.dirty = true;
-    }
-
-    pub fn clear(&mut self) {
-        self.items.clear();
-        self.dirty = true;
-        let _ = std::fs::remove_dir_all(posters_dir());
-    }
-
-    pub fn save_if_dirty(&mut self) {
-        if !self.dirty {
-            return;
-        }
-        self.dirty = false;
-        if let Ok(b) = serde_json::to_vec(self) {
-            let p = Self::path();
-            if let Some(d) = p.parent() {
-                let _ = std::fs::create_dir_all(d);
-            }
-            let tmp = p.with_extension("tmp");
-            if std::fs::write(&tmp, b).is_ok() {
-                let _ = std::fs::rename(tmp, p);
-            }
-        }
-    }
+pub enum Job {
+    Match(MatchReq),
+    /// Fix Match: search by title (shows or movies).
+    Search { show: bool, query: String, year: Option<u32> },
+    /// Fix Match: use this TMDB result.
+    Apply { req: MatchReq, tmdb: u64 },
 }
 
-pub fn posters_dir() -> PathBuf {
-    crate::config::data_dir().join("posters")
-}
-
-// ------------------------------------------------------------------ worker
-
-pub struct Scraper {
-    tx: Sender<(Query, Settings)>,
-    rx: Receiver<(String, Info)>,
-    asked: HashSet<String>,
+pub enum Done {
+    Matched { key: String, tmdb: Option<u64>, info: Info, manual: bool },
+    Results { query: String, list: Vec<Candidate>, error: Option<String> },
+    Image { src: String, path: Option<PathBuf> },
 }
 
 #[derive(Clone, Debug)]
@@ -138,30 +109,85 @@ pub struct Settings {
     pub tmdb_key: String,
 }
 
+pub fn posters_dir() -> PathBuf {
+    crate::config::data_dir().join("posters")
+}
+
+// ------------------------------------------------------------------ workers
+
+pub struct Scraper {
+    jobs: Sender<(Job, Settings)>,
+    images: Sender<(String, ImgKind)>,
+    rx: Receiver<Done>,
+    asked: HashSet<String>,
+}
+
 impl Scraper {
     pub fn new(ctx: egui::Context) -> Self {
-        let (tx, req_rx) = channel::<(Query, Settings)>();
-        let (res_tx, rx) = channel();
+        let (jobs, job_rx) = channel::<(Job, Settings)>();
+        let (images, img_rx) = channel::<(String, ImgKind)>();
+        let (tx, rx) = channel();
+        let (tx2, ctx2) = (tx.clone(), ctx.clone());
         std::thread::Builder::new()
-            .name("scraper".into())
+            .name("matcher".into())
             .spawn(move || {
                 crate::library::lower_io_priority();
-                while let Ok((q, s)) = req_rx.recv() {
-                    let info = lookup(&q, &s);
-                    if res_tx.send((q.key(), info)).is_err() {
+                while let Ok((job, s)) = job_rx.recv() {
+                    let done = match job {
+                        Job::Match(req) => {
+                            let (tmdb, info) = lookup(&req, &s);
+                            Done::Matched { key: req.key, tmdb, info, manual: false }
+                        }
+                        Job::Search { show, query, year } => {
+                            let r = search(show, &query, year, &s);
+                            let error = r.is_err().then(|| r.clone().err().unwrap_or_default());
+                            Done::Results { query, list: r.unwrap_or_default(), error }
+                        }
+                        Job::Apply { req, tmdb } => {
+                            let local = local(&req).unwrap_or_default();
+                            let online = if req.show { tmdb_tv(tmdb, s.tmdb_key.trim()) } else { tmdb_movie(tmdb, s.tmdb_key.trim()) };
+                            let info = online.map(|o| merge(local.clone(), o)).unwrap_or(local);
+                            Done::Matched { key: req.key, tmdb: Some(tmdb), info: stamp(info), manual: true }
+                        }
+                    };
+                    if tx.send(done).is_err() {
                         break;
                     }
                     ctx.request_repaint();
                 }
             })
-            .expect("spawn scraper thread");
-        Self { tx, rx, asked: HashSet::new() }
+            .expect("spawn matcher thread");
+        std::thread::Builder::new()
+            .name("images".into())
+            .spawn(move || {
+                crate::library::lower_io_priority();
+                while let Ok((src, kind)) = img_rx.recv() {
+                    let path = fetch_image(&src, kind);
+                    if tx2.send(Done::Image { src, path }).is_err() {
+                        break;
+                    }
+                    ctx2.request_repaint();
+                }
+            })
+            .expect("spawn image thread");
+        Self { jobs, images, rx, asked: HashSet::new() }
     }
 
-    /// Ask once per run (the cache decides whether it's needed at all).
-    pub fn request(&mut self, q: Query, s: Settings) {
-        if self.asked.insert(q.key()) {
-            let _ = self.tx.send((q, s));
+    /// Match a show/movie (once per run; the database decides whether it's needed).
+    pub fn request(&mut self, req: MatchReq, s: Settings) {
+        if self.asked.insert(format!("m:{}", req.key)) {
+            let _ = self.jobs.send((Job::Match(req), s));
+        }
+    }
+
+    pub fn job(&mut self, job: Job, s: Settings) {
+        let _ = self.jobs.send((job, s));
+    }
+
+    /// Download and shrink an image (once per run).
+    pub fn image(&mut self, src: &str, kind: ImgKind) {
+        if self.asked.insert(format!("i:{src}")) {
+            let _ = self.images.send((src.to_string(), kind));
         }
     }
 
@@ -169,36 +195,55 @@ impl Scraper {
         self.asked.clear();
     }
 
-    pub fn poll(&self) -> Vec<(String, Info)> {
+    pub fn poll(&self) -> Vec<Done> {
         self.rx.try_iter().collect()
     }
 }
 
-fn lookup(q: &Query, s: &Settings) -> Info {
-    let key = q.key();
-    let mut info = local(q, &key).unwrap_or_default();
-    let needs_online = info.title.is_empty() || info.poster.is_none() || (matches!(q, Query::Show { .. }) && info.episodes.is_empty());
-    if s.online && needs_online {
-        let online = match q {
-            Query::Show { name, .. } => tvmaze(name, &key),
-            Query::Movie { title, year, .. } if !s.tmdb_key.trim().is_empty() => tmdb_movie(title, *year, s.tmdb_key.trim(), &key),
-            Query::Movie { .. } => None,
-        };
-        if let Some(o) = online {
-            info = merge(info, o);
+fn stamp(mut info: Info) -> Info {
+    info.fetched = crate::config::now_unix();
+    info
+}
+
+/// Local files, then TMDB (by ID hint, else search) or TVmaze for shows without a key.
+fn lookup(req: &MatchReq, s: &Settings) -> (Option<u64>, Info) {
+    let mut info = local(req).unwrap_or_default();
+    let mut tmdb = None;
+    let has_local_meta = !info.title.is_empty() && info.poster.is_some();
+    if s.online && !has_local_meta {
+        let key = s.tmdb_key.trim();
+        if !key.is_empty() {
+            tmdb = req.tmdb.or_else(|| find_id(req, key)).or_else(|| search(req.show, &req.title, req.year, s).ok()?.first().map(|c| c.tmdb));
+            let online = tmdb.and_then(|id| if req.show { tmdb_tv(id, key) } else { tmdb_movie(id, key) });
+            if let Some(o) = online {
+                info = merge(info, o);
+            }
+        } else if req.show {
+            if let Some(o) = tvmaze(&req.title, req.tvdb, req.imdb.as_deref()) {
+                info = merge(info, o);
+            }
         }
     }
-    info.fetched = crate::config::now_unix();
-    info.missing = info.title.is_empty() && info.poster.is_none();
-    info
+    (tmdb, stamp(info))
 }
 
 /// Local values win; online fills the gaps.
 fn merge(local: Info, online: Info) -> Info {
     let pick = |a: String, b: String| if a.is_empty() { b } else { a };
-    let source = if local.source.is_empty() { online.source.clone() } else { format!("{} + {}", local.source, online.source) };
+    let source = match (local.source.is_empty(), online.source.is_empty()) {
+        (true, _) => online.source.clone(),
+        (false, true) => local.source.clone(),
+        (false, false) => format!("{} + {}", local.source, online.source),
+    };
     let mut episodes = online.episodes;
     episodes.extend(local.episodes);
+    let mut seasons = online.seasons;
+    for (n, ls) in local.seasons {
+        let e = seasons.entry(n).or_default();
+        if ls.poster.is_some() {
+            e.poster = ls.poster;
+        }
+    }
     Info {
         title: pick(local.title, online.title),
         year: local.year.or(online.year),
@@ -206,33 +251,37 @@ fn merge(local: Info, online: Info) -> Info {
         rating: local.rating.or(online.rating),
         genres: if local.genres.is_empty() { online.genres } else { local.genres },
         poster: local.poster.or(online.poster),
+        backdrop: local.backdrop.or(online.backdrop),
         source,
+        seasons,
         episodes,
-        ..Default::default()
+        fetched: 0,
     }
 }
 
 // ------------------------------------------------------------------ local files
 
-fn local(q: &Query, key: &str) -> Option<Info> {
-    let (nfos, posters): (Vec<PathBuf>, Vec<PathBuf>) = match q {
-        Query::Show { dir: Some(d), .. } => (
-            vec![d.join("tvshow.nfo")],
-            ["poster.jpg", "poster.png", "folder.jpg", "folder.png", "cover.jpg"].iter().map(|n| d.join(n)).collect(),
-        ),
-        Query::Show { dir: None, .. } => return None,
-        Query::Movie { file, .. } => {
-            let dir = file.parent()?;
-            let stem = file.file_stem()?.to_string_lossy().into_owned();
-            (
-                vec![dir.join(format!("{stem}.nfo")), dir.join("movie.nfo")],
-                [format!("{stem}-poster.jpg"), format!("{stem}-poster.png"), format!("{stem}.jpg"), "poster.jpg".into(), "poster.png".into(), "folder.jpg".into(), "cover.jpg".into()]
-                    .iter()
-                    .map(|n| dir.join(n))
-                    .collect(),
-            )
+fn first_file(dir: &Path, names: &[String]) -> Option<String> {
+    names.iter().map(|n| dir.join(n)).find(|p| p.is_file()).map(|p| p.to_string_lossy().into_owned())
+}
+
+fn local(req: &MatchReq) -> Option<Info> {
+    let dir = req.folder.clone().or_else(|| req.file.as_ref()?.parent().map(Path::to_path_buf))?;
+    let stem = req.file.as_ref().and_then(|f| f.file_stem()).map(|s| s.to_string_lossy().into_owned());
+    let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    let mut nfos = Vec::new();
+    let mut posters = s(&["poster.jpg", "poster.png", "folder.jpg", "folder.png", "cover.jpg", "show.jpg"]);
+    let fanart = s(&["fanart.jpg", "fanart.png", "background.jpg", "backdrop.jpg", "art.jpg"]);
+    if req.show {
+        nfos.push(dir.join("tvshow.nfo"));
+    } else {
+        if let Some(st) = &stem {
+            nfos.push(dir.join(format!("{st}.nfo")));
+            posters.insert(0, format!("{st}-poster.jpg"));
+            posters.insert(1, format!("{st}-poster.png"));
         }
-    };
+        nfos.push(dir.join("movie.nfo"));
+    }
     let mut info = Info::default();
     if let Some(xml) = nfos.iter().find_map(|p| std::fs::read_to_string(p).ok()) {
         info.title = tag(&xml, "title").unwrap_or_default();
@@ -242,11 +291,23 @@ fn local(q: &Query, key: &str) -> Option<Info> {
         info.genres = all_tags(&xml, "genre");
         info.source = "local".into();
     }
-    if let Some(src) = posters.iter().find(|p| p.is_file()) {
-        info.poster = make_thumb(&std::fs::read(src).ok()?, key);
-        if info.source.is_empty() {
-            info.source = "local".into();
+    info.poster = first_file(&dir, &posters);
+    info.backdrop = first_file(&dir, &fanart);
+    if req.show {
+        // season01-poster.jpg, season01.jpg, season-specials-poster.jpg, Season 1/poster.jpg
+        for n in 0..=50u32 {
+            let names = if n == 0 {
+                s(&["season-specials-poster.jpg", "season00-poster.jpg", "season00.jpg", "Specials/poster.jpg"])
+            } else {
+                vec![format!("season{n:02}-poster.jpg"), format!("season{n:02}.jpg"), format!("Season {n}/poster.jpg"), format!("Season {n:02}/poster.jpg")]
+            };
+            if let Some(p) = first_file(&dir, &names) {
+                info.seasons.entry(n).or_default().poster = Some(p);
+            }
         }
+    }
+    if info.source.is_empty() && (info.poster.is_some() || info.backdrop.is_some() || !info.seasons.is_empty()) {
+        info.source = "local".into();
     }
     (!info.source.is_empty()).then_some(info)
 }
@@ -331,65 +392,181 @@ fn json(url: &str, headers: &[String]) -> Option<serde_json::Value> {
     serde_json::from_slice(&curl(url, headers)?).ok()
 }
 
-fn tvmaze(name: &str, key: &str) -> Option<Info> {
-    let v = json(&format!("https://api.tvmaze.com/singlesearch/shows?q={}&embed=episodes", urlencode(name)), &[])?;
-    let s = |v: &serde_json::Value| v.as_str().unwrap_or("").to_string();
-    let mut episodes = HashMap::new();
-    for e in v["_embedded"]["episodes"].as_array().into_iter().flatten() {
-        let (Some(se), Some(ep)) = (e["season"].as_u64(), e["number"].as_u64()) else { continue };
-        episodes.insert(ep_key(se as u32, ep as u32), EpInfo { title: s(&e["name"]), overview: strip_html(&s(&e["summary"])), aired: s(&e["airdate"]) });
+
+// ------------------------------------------------------------------ TMDB
+
+const IMG: &str = "https://image.tmdb.org/t/p/";
+
+/// GET a TMDB v3 path. A v4 "read access token" (a long JWT) goes in a header, a v3 key in
+/// the URL.
+fn tmdb(path: &str, key: &str) -> Option<serde_json::Value> {
+    let sep = if path.contains('?') { '&' } else { '?' };
+    if key.len() > 40 {
+        json(&format!("https://api.themoviedb.org/3{path}"), &[format!("Authorization: Bearer {key}")])
+    } else {
+        json(&format!("https://api.themoviedb.org/3{path}{sep}api_key={}", urlencode(key)), &[])
     }
-    let poster = v["image"]["medium"].as_str().and_then(|u| curl(u, &[])).and_then(|b| make_thumb(&b, key));
-    Some(Info {
-        title: s(&v["name"]),
-        year: v["premiered"].as_str().and_then(|d| d.get(..4)?.parse().ok()),
-        overview: strip_html(&s(&v["summary"])),
-        rating: v["rating"]["average"].as_f64().map(|r| r as f32),
-        genres: v["genres"].as_array().into_iter().flatten().filter_map(|g| g.as_str().map(String::from)).collect(),
-        poster,
-        source: "TVmaze".into(),
-        episodes,
-        ..Default::default()
-    })
 }
 
-fn tmdb_movie(title: &str, year: Option<u32>, api_key: &str, key: &str) -> Option<Info> {
-    // A v4 "read access token" is a long JWT and goes in a header; a v3 key is a URL parameter.
-    let (auth_param, headers) = if api_key.len() > 40 {
-        (String::new(), vec![format!("Authorization: Bearer {api_key}")])
-    } else {
-        (format!("&api_key={}", urlencode(api_key)), vec![])
+fn img(path: &serde_json::Value, size: &str) -> Option<String> {
+    path.as_str().filter(|p| !p.is_empty()).map(|p| format!("{IMG}{size}{p}"))
+}
+
+fn year_of(v: &serde_json::Value) -> Option<u32> {
+    v.as_str().and_then(|d| d.get(..4)?.parse().ok())
+}
+
+fn st(v: &serde_json::Value) -> String {
+    v.as_str().unwrap_or("").to_string()
+}
+
+/// TVDB/IMDb ID hint → TMDB ID.
+fn find_id(req: &MatchReq, key: &str) -> Option<u64> {
+    let (id, source) = match (&req.tvdb, &req.imdb) {
+        (Some(t), _) => (t.to_string(), "tvdb_id"),
+        (None, Some(i)) => (i.clone(), "imdb_id"),
+        _ => return None,
     };
-    let year_param = year.map(|y| format!("&year={y}")).unwrap_or_default();
-    let v = json(&format!("https://api.themoviedb.org/3/search/movie?query={}{year_param}{auth_param}", urlencode(title)), &headers)?;
-    let m = v["results"].as_array()?.first()?.clone();
-    let s = |v: &serde_json::Value| v.as_str().unwrap_or("").to_string();
-    let poster = m["poster_path"].as_str().and_then(|p| curl(&format!("https://image.tmdb.org/t/p/w342{p}"), &[])).and_then(|b| make_thumb(&b, key));
+    let v = tmdb(&format!("/find/{}?external_source={source}", urlencode(&id)), key)?;
+    let list = if req.show { &v["tv_results"] } else { &v["movie_results"] };
+    list.as_array()?.first()?["id"].as_u64()
+}
+
+fn search(show: bool, query: &str, year: Option<u32>, s: &Settings) -> Result<Vec<Candidate>, String> {
+    let key = s.tmdb_key.trim();
+    if key.is_empty() {
+        return Err("Fix Match needs a TMDB key (tmdb_api_key in config.toml)".into());
+    }
+    let (kind, yp, title_f, date_f) = if show { ("tv", "first_air_date_year", "name", "first_air_date") } else { ("movie", "year", "title", "release_date") };
+    let year_q = year.map(|y| format!("&{yp}={y}")).unwrap_or_default();
+    let v = tmdb(&format!("/search/{kind}?query={}{year_q}", urlencode(query)), key).ok_or("TMDB didn't answer (offline?)")?;
+    let mut list: Vec<Candidate> = v["results"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| Some(Candidate { tmdb: r["id"].as_u64()?, title: st(&r[title_f]), year: year_of(&r[date_f]), overview: st(&r["overview"]) }))
+        .collect();
+    // With a year, an exact-year result beats a more popular one.
+    if let Some(y) = year {
+        list.sort_by_key(|c| c.year != Some(y));
+    }
+    Ok(list)
+}
+
+fn genres(v: &serde_json::Value) -> Vec<String> {
+    v["genres"].as_array().into_iter().flatten().filter_map(|g| g["name"].as_str().map(String::from)).collect()
+}
+
+fn tmdb_movie(id: u64, key: &str) -> Option<Info> {
+    let m = tmdb(&format!("/movie/{id}"), key)?;
     Some(Info {
-        title: s(&m["title"]),
-        year: m["release_date"].as_str().and_then(|d| d.get(..4)?.parse().ok()),
-        overview: s(&m["overview"]),
+        title: st(&m["title"]),
+        year: year_of(&m["release_date"]),
+        overview: st(&m["overview"]),
         rating: m["vote_average"].as_f64().filter(|r| *r > 0.0).map(|r| r as f32),
-        poster,
+        genres: genres(&m),
+        poster: img(&m["poster_path"], "w342"),
+        backdrop: img(&m["backdrop_path"], "w1280"),
         source: "TMDB".into(),
         ..Default::default()
     })
 }
 
-// ------------------------------------------------------------------ posters
+/// Show details plus every season's episodes (20 seasons per request).
+fn tmdb_tv(id: u64, key: &str) -> Option<Info> {
+    let v = tmdb(&format!("/tv/{id}"), key)?;
+    let mut info = Info {
+        title: st(&v["name"]),
+        year: year_of(&v["first_air_date"]),
+        overview: st(&v["overview"]),
+        rating: v["vote_average"].as_f64().filter(|r| *r > 0.0).map(|r| r as f32),
+        genres: genres(&v),
+        poster: img(&v["poster_path"], "w342"),
+        backdrop: img(&v["backdrop_path"], "w1280"),
+        source: "TMDB".into(),
+        ..Default::default()
+    };
+    let numbers: Vec<u64> = v["seasons"].as_array().into_iter().flatten().filter_map(|s| s["season_number"].as_u64()).collect();
+    for s in v["seasons"].as_array().into_iter().flatten() {
+        let Some(n) = s["season_number"].as_u64() else { continue };
+        info.seasons.insert(n as u32, SeasonInfo { name: st(&s["name"]), overview: st(&s["overview"]), poster: img(&s["poster_path"], "w342") });
+    }
+    for chunk in numbers.chunks(20) {
+        let append: Vec<String> = chunk.iter().map(|n| format!("season/{n}")).collect();
+        let Some(d) = tmdb(&format!("/tv/{id}?append_to_response={}", append.join(",")), key) else { continue };
+        for n in chunk {
+            for e in d[format!("season/{n}")]["episodes"].as_array().into_iter().flatten() {
+                let Some(en) = e["episode_number"].as_u64() else { continue };
+                info.episodes.insert(
+                    ep_key(*n as u32, en as u32),
+                    EpInfo { title: st(&e["name"]), overview: st(&e["overview"]), aired: st(&e["air_date"]), still: img(&e["still_path"], "w300") },
+                );
+            }
+        }
+    }
+    Some(info)
+}
 
-/// Height of stored poster thumbnails (about 2× what the info panel shows).
-const THUMB_H: usize = 480;
+// ------------------------------------------------------------------ TVmaze (shows, no key)
 
-/// Decodes a JPEG/PNG, shrinks it to `THUMB_H` tall and saves it as a PNG. Returns its path.
-fn make_thumb(bytes: &[u8], key: &str) -> Option<PathBuf> {
-    let (w, h, rgb) = decode(bytes)?;
-    let (tw, th) = if h > THUMB_H { ((w * THUMB_H / h).max(1), THUMB_H) } else { (w, h) };
+fn tvmaze(name: &str, tvdb: Option<u64>, imdb: Option<&str>) -> Option<Info> {
+    let embed = "embed[]=episodes&embed[]=seasons&embed[]=images";
+    let v = match (tvdb, imdb) {
+        (Some(t), _) => json(&format!("https://api.tvmaze.com/lookup/shows?thetvdb={t}"), &[])
+            .and_then(|s| s["id"].as_u64())
+            .and_then(|id| json(&format!("https://api.tvmaze.com/shows/{id}?{embed}"), &[])),
+        (None, Some(i)) => json(&format!("https://api.tvmaze.com/lookup/shows?imdb={}", urlencode(i)), &[])
+            .and_then(|s| s["id"].as_u64())
+            .and_then(|id| json(&format!("https://api.tvmaze.com/shows/{id}?{embed}"), &[])),
+        _ => None,
+    }
+    .or_else(|| json(&format!("https://api.tvmaze.com/singlesearch/shows?q={}&{embed}", urlencode(name)), &[]))?;
+    let medium = |x: &serde_json::Value| x["image"]["medium"].as_str().map(String::from);
+    let mut info = Info {
+        title: st(&v["name"]),
+        year: year_of(&v["premiered"]),
+        overview: strip_html(&st(&v["summary"])),
+        rating: v["rating"]["average"].as_f64().map(|r| r as f32),
+        genres: v["genres"].as_array().into_iter().flatten().filter_map(|g| g.as_str().map(String::from)).collect(),
+        poster: medium(&v),
+        source: "TVmaze".into(),
+        ..Default::default()
+    };
+    for e in v["_embedded"]["episodes"].as_array().into_iter().flatten() {
+        let (Some(se), Some(ep)) = (e["season"].as_u64(), e["number"].as_u64()) else { continue };
+        info.episodes.insert(ep_key(se as u32, ep as u32), EpInfo { title: st(&e["name"]), overview: strip_html(&st(&e["summary"])), aired: st(&e["airdate"]), still: medium(e) });
+    }
+    for s in v["_embedded"]["seasons"].as_array().into_iter().flatten() {
+        let Some(n) = s["number"].as_u64() else { continue };
+        info.seasons.insert(n as u32, SeasonInfo { name: st(&s["name"]), overview: strip_html(&st(&s["summary"])), poster: medium(s) });
+    }
+    info.backdrop = v["_embedded"]["images"].as_array().into_iter().flatten().find(|i| i["type"] == "background").and_then(|i| i["resolutions"]["original"]["url"].as_str().map(String::from));
+    Some(info)
+}
+
+// ------------------------------------------------------------------ images
+
+/// Downloads (or reads) an image and saves a small PNG. Posters: 480 px tall; stills:
+/// 400 px wide; backdrops: 1280 px wide.
+fn fetch_image(src: &str, kind: ImgKind) -> Option<PathBuf> {
+    let bytes = if src.starts_with("https://") || src.starts_with("http://") { curl(src, &[])? } else { std::fs::read(src).ok()? };
+    let (w, h, rgb) = decode(&bytes)?;
+    let (tw, th) = match kind {
+        ImgKind::Poster if h > 480 => (w * 480 / h, 480),
+        ImgKind::Still if w > 400 => (400, h * 400 / w),
+        ImgKind::Backdrop if w > 1280 => (1280, h * 1280 / w),
+        _ => (w, h),
+    };
+    let (tw, th) = (tw.max(1), th.max(1));
     let small = resize(&rgb, w, h, tw, th);
     let dir = posters_dir();
     std::fs::create_dir_all(&dir).ok()?;
-    let name: String = key.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
-    let path = dir.join(format!("{name}.png"));
+    // Name by a hash of the source so the same image is never stored twice.
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in src.bytes() {
+        hash = (hash ^ b as u64).wrapping_mul(0x100000001b3);
+    }
+    let path = dir.join(format!("{hash:016x}.png"));
     let file = std::io::BufWriter::new(std::fs::File::create(&path).ok()?);
     let mut enc = png::Encoder::new(file, tw as u32, th as u32);
     enc.set_color(png::ColorType::Rgb);
@@ -487,6 +664,14 @@ mod tests {
     fn html_and_urls() {
         assert_eq!(strip_html("<p>Mal &amp; <b>crew</b></p>"), "Mal & crew");
         assert_eq!(urlencode("The Office (US)"), "The+Office+%28US%29");
+    }
+
+    #[test]
+    fn tmdb_images_and_years() {
+        let v: serde_json::Value = serde_json::from_str(r#"{"poster_path":"/a.jpg","first_air_date":"2002-09-20","empty":""}"#).unwrap();
+        assert_eq!(img(&v["poster_path"], "w342").as_deref(), Some("https://image.tmdb.org/t/p/w342/a.jpg"));
+        assert_eq!(img(&v["empty"], "w342"), None);
+        assert_eq!(year_of(&v["first_air_date"]), Some(2002));
     }
 
     #[test]

@@ -89,28 +89,38 @@ B (○) or ≡ finishes. Results filter live while you type. Settings live in
 `~/.config/jimmy/` (`config.toml`, `bindings.toml`), history in `~/.local/share/jimmy/state.toml`.
 The clock is 12-hour by default; switch to 24-hour in Settings → General.
 
-## TV shows, movies and playlists
+## Libraries, TV shows, movies and playlists
 
-- **TV shows** groups episodes by show and season from their names: `Show S01E02 Title.mkv`,
-  `Show - 1x02.mkv`, or `Show/Season 1/03 - Title.mkv`. A show's page has season tabs (LT/RT,
-  `[` `]`, or left/right), marks what's watched and what's next; X on a show plays its next
-  episode. Everything else is under **Movies**.
-- Playing an episode queues the rest of the show. When one ends an **Up next** card counts
-  down (A plays now, B cancels). The player's **Episodes** tab (E, LS, or from Tracks) jumps
-  to any episode; Shift+. / Shift+, (right stick) go to the next / previous one.
-- **Repeat** (R in the player): off, this video, or the whole queue. **When a video ends**:
-  go back to the list, or stay on the last frame with Replay / Back. Both are in Settings →
-  Playback and the Episodes tab.
-- **Playlists** are `.m3u8` files. P (right-stick click) adds the selected video, a whole show,
-  or a playlist to a new or existing playlist. Any `.m3u`/`.m3u8` in your folders works too.
-- **Posters and info**: `tvshow.nfo`, `movie.nfo` / `<name>.nfo` and `poster.jpg` /
-  `folder.jpg` / `<name>-poster.jpg` next to your files are used first, offline. Online,
-  shows come from TVmaze (no account needed); movies need a free TMDB key in `config.toml`:
-  `tmdb_api_key = "…"`. Only what you look at is looked up, via the system `curl`. Turn it
-  off or refresh it in Settings → Library.
-- **Grid view** (V, or left-stick click, in the browser) shows Movies, TV shows, My media,
-  Continue watching, Recent and playlists as a poster grid; it's remembered. Folders and a
-  show's episode page stay as lists.
+- **Libraries are typed, like Plex.** Adding a folder (Browse computer… → X, or Settings →
+  Library) asks whether it holds **Movies** or **TV Shows**; ◀ ▶ on a library in Settings
+  switches it. Old folder lists are converted automatically.
+- **TV libraries:** each top-level folder is a show, matched by its name:
+  `Show (Year) {tmdb-1396}` or `{tvdb-…}` / `{imdb-…}` hints skip the search. Inside:
+  `S01E02`, `1x02`, multi-episode `S01E01-E02`, dates (`2024-03-05`), absolute numbers
+  (`Show - 105`, mapped to seasons once matched), `Specials/` = season 0, split files
+  (`- pt1`, `cd2`).
+- **Movie libraries:** one movie per `Title (Year)` folder or per file; split movies play
+  their parts back to back.
+- **Matching:** TMDB for movies and shows (free key: `tmdb_api_key = "…"` in `config.toml`).
+  Without a key, shows use TVmaze and movies use local files only. Local `tvshow.nfo`,
+  `movie.nfo`, `poster.jpg`, `fanart.jpg` and `season01-poster.jpg` are used first.
+  Everything lands in `library.json`, keyed by TMDB ID. The libraries are rescanned in the
+  background (at startup and every 10 minutes) so new files appear on their own.
+- **Fix Match** (M, or from the palette): search TMDB and pick the right show or movie; your
+  pick sticks.
+- **Art:** posters, season posters, episode thumbnails and background art, downloaded only
+  when shown and shrunk once. A show's page in grid view is a wall of episode thumbnails.
+- **Recently added** in the menu lists the newest files.
+- **TV shows** page: season tabs (LT/RT, `[` `]`, or left/right), what's watched and next;
+  X on a show plays its next episode. Playing an episode queues the rest of the show, with
+  an **Up next** countdown (A plays now, B cancels). In the player: **Episodes** (E, LS),
+  next / previous episode (Shift+. / Shift+, or the right stick), **frame step** with `.`
+  and `,`.
+- **Repeat** (R in the player) and **When a video ends** (go back, or stay with Replay /
+  Back) are in Settings → Playback and the Episodes tab.
+- **Playlists** are `.m3u8` files: P (right-stick click) adds a video, a show or a playlist.
+- **Grid view** (V, or left-stick click) for Movies, TV shows, My media, Recently added,
+  Continue watching, Recent and playlists.
 - Settings → Library → **Clear watch history** forgets positions and watched marks.
 
 ## Command line

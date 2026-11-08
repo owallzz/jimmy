@@ -4,6 +4,7 @@ mod action;
 mod config;
 mod input;
 mod install;
+mod libdb;
 mod library;
 mod media;
 mod mem;

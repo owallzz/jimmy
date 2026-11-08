@@ -1,16 +1,26 @@
 //! Movies vs. TV: works out shows, seasons and episodes from file and folder names alone
 //! (no probing, no network), so it's instant even on slow disks.
 //!
-//! Recognised: `Show.S01E02.Title.mkv`, `Show - 1x02 - Title.mkv`, `S01E01E02` (double
-//! episodes), and `Show/Season 1/03 - Title.mkv` or `.../Episode 3.mkv` folder layouts.
+//! In a TV library (Plex-style) each top-level folder is a show: `Show (2008) {tmdb-1396}`.
+//! Inside it: `S01E02`, `1x02`, `S01E01-E02` / `S01E01E02` (multi-episode), dates
+//! (`2024-03-05`), absolute numbers (`Show - 105`), `Season 1/03 - Title`, `Specials/` =
+//! season 0, and split files (`- pt1`, `cd2`). Outside libraries the file name alone is used.
 
-use crate::library::{Entry, natural_key};
-use std::collections::HashMap;
+use crate::library::Entry;
 use std::path::Path;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Episode {
     pub show: String,
+    /// The show's key in the library database (empty outside libraries).
+    pub key: String,
+    /// Part of a split episode (`- pt2`).
+    pub part: Option<u32>,
+    /// Date-based shows: "2024-03-05" (season = year until matched to a real episode).
+    pub date: Option<String>,
+    /// Absolute-numbered shows: the number in the file (episode = it until mapped).
+    pub absolute: Option<u32>,
     pub season: u32,
     pub episode: u32,
     /// Last episode of a multi-episode file (S01E01E02 → 2).
@@ -20,11 +30,21 @@ pub struct Episode {
 }
 
 impl Episode {
-    /// "S01E02" or "S01E01–02".
+    /// "S01E02", "S01E01–02", "2024-03-05", "E105", "S00E01"; plus " pt2" for parts.
     pub fn code(&self) -> String {
-        match self.episode_end {
-            Some(e) => format!("S{:02}E{:02}–{:02}", self.season, self.episode, e),
-            None => format!("S{:02}E{:02}", self.season, self.episode),
+        let base = if let (Some(d), true) = (&self.date, self.season >= 1900) {
+            d.clone()
+        } else if let (Some(a), true) = (self.absolute, self.season == 1 && self.episode == self.absolute.unwrap_or(0)) {
+            format!("E{a:02}")
+        } else {
+            match self.episode_end {
+                Some(e) => format!("S{:02}E{:02}–{:02}", self.season, self.episode, e),
+                None => format!("S{:02}E{:02}", self.season, self.episode),
+            }
+        };
+        match self.part {
+            Some(p) => format!("{base} pt{p}"),
+            None => base,
         }
     }
 }
@@ -186,7 +206,7 @@ pub fn episode(path: &Path) -> Option<Episode> {
     if let Some((a, b, season, ep, ep_end)) = found {
         let before = clean(&stem[..a]);
         let show = if before.is_empty() { show_folder()? } else { before };
-        return Some(Episode { show, season, episode: ep, episode_end: ep_end, title: title_after(&stem[b..]) });
+        return Some(Episode { show, season, episode: ep, episode_end: ep_end, title: title_after(&stem[b..]), ..Default::default() });
     }
 
     // Inside a "Season N" folder: "03 - Title", "E03", "Episode 3", "Ep 03".
@@ -201,7 +221,161 @@ pub fn episode(path: &Path) -> Option<Episode> {
         return None;
     }
     let ep: u32 = rest_t[..num_len].parse().ok()?;
-    Some(Episode { show: show_folder()?, season, episode: ep, episode_end: None, title: title_after(&rest_t[num_len..]) })
+    Some(Episode { show: show_folder()?, season, episode: ep, title: title_after(&rest_t[num_len..]), ..Default::default() })
+}
+
+/// A Plex-style folder name: `The Office (US) (2005) {tvdb-73244}` or `Heat (1995) [tmdb-949]`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FolderTitle {
+    pub title: String,
+    pub year: Option<u32>,
+    pub tmdb: Option<u64>,
+    pub tvdb: Option<u64>,
+    pub imdb: Option<String>,
+}
+
+pub fn folder_title(name: &str) -> FolderTitle {
+    let mut out = FolderTitle::default();
+    let mut rest = String::new();
+    // {tmdb-123} / [tvdb-456] / {imdb-tt0113277} hints.
+    let mut chars = name.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if c == '{' || c == '[' {
+            let close = if c == '{' { '}' } else { ']' };
+            if let Some(j) = name[i + 1..].find(close) {
+                let inner = name[i + 1..i + 1 + j].trim().to_ascii_lowercase();
+                let inner = inner.replace(' ', "");
+                let id = inner.split_once(['-', '=']).map(|(k, v)| (k.to_string(), v.to_string()));
+                match id {
+                    Some((k, v)) if k == "tmdb" || k == "tmdbid" => out.tmdb = v.parse().ok(),
+                    Some((k, v)) if k == "tvdb" || k == "tvdbid" => out.tvdb = v.parse().ok(),
+                    Some((k, v)) if k == "imdb" || k == "imdbid" => out.imdb = Some(v),
+                    _ => {}
+                }
+                for _ in 0..=j {
+                    chars.next();
+                }
+                continue;
+            }
+        }
+        rest.push(c);
+    }
+    // A trailing "(2005)" is the year; other parentheses stay ("The Office (US)").
+    let t = rest.trim();
+    if t.ends_with(')') {
+        if let Some(open) = t.rfind('(') {
+            if let Some(y) = year_at(&t[open + 1..t.len() - 1]) {
+                out.year = Some(y);
+                out.title = clean(&t[..open]);
+                return out;
+            }
+        }
+    }
+    let (title, year) = movie_title(&format!("{t}.x"));
+    out.title = if title.is_empty() { t.to_string() } else { title };
+    out.year = out.year.or(year);
+    out
+}
+
+/// "Movie - pt2", "Movie.cd1", "Show S01E01 part 2" → (base, part).
+pub fn split_part(stem: &str) -> (&str, Option<u32>) {
+    let l = stem.to_ascii_lowercase();
+    for marker in ["part", "pt", "cd", "disc", "disk", "dvd"] {
+        if let Some(i) = l.rfind(marker) {
+            let before_ok = i == 0 || matches!(l.as_bytes()[i - 1], b' ' | b'.' | b'_' | b'-');
+            let rest = l[i + marker.len()..].trim_start_matches([' ', '.', '_', '-']);
+            if before_ok && !rest.is_empty() && rest.len() <= 2 && rest.chars().all(|c| c.is_ascii_digit()) {
+                let base = stem[..i].trim_end_matches([' ', '.', '_', '-']);
+                return (base, rest.parse().ok());
+            }
+        }
+    }
+    (stem, None)
+}
+
+/// `2024-03-05`, `2024.03.05`, `2024 03 05` or `05-03-2024` → ("2024-03-05", year, month, day).
+fn find_date(s: &str) -> Option<(String, u32, u32, u32)> {
+    let words: Vec<&str> = s.split(|c: char| !c.is_ascii_digit()).filter(|w| !w.is_empty()).collect();
+    for w in words.windows(3) {
+        let (a, b, c) = (w[0], w[1], w[2]);
+        let parse = |x: &str| x.parse::<u32>().ok();
+        let (y, m, d) = if a.len() == 4 && b.len() == 2 && c.len() == 2 {
+            (parse(a)?, parse(b)?, parse(c)?)
+        } else if a.len() == 2 && b.len() == 2 && c.len() == 4 {
+            (parse(c)?, parse(b)?, parse(a)?)
+        } else {
+            continue;
+        };
+        if (1900..=2099).contains(&y) && (1..=12).contains(&m) && (1..=31).contains(&d) {
+            return Some((format!("{y:04}-{m:02}-{d:02}"), y, m, d));
+        }
+    }
+    None
+}
+
+/// An episode file inside a TV library show folder. `dirs` are the folders between the
+/// show folder and the file ("Season 2", "Specials"…).
+pub fn tv_episode(show: &str, dirs: &[String], stem: &str) -> Option<Episode> {
+    let (base, part) = split_part(stem);
+    let dir_season = dirs.iter().rev().find_map(|d| {
+        let l = d.to_ascii_lowercase();
+        if l == "specials" || l == "special" {
+            Some(0)
+        } else {
+            season_folder(d)
+        }
+    });
+    let title_after = |s: &str| Some(clean(s)).filter(|t| !t.is_empty() && !t.chars().all(|c| c.is_ascii_digit()) && show_key(t) != show_key(show));
+    let mk = |season, episode, end, title| Some(Episode { show: show.to_string(), season, episode, episode_end: end, title, part, ..Default::default() });
+
+    if let Some((_, b, se, ep, end)) = find_sxxexx(base) {
+        return mk(se, ep, end, title_after(&base[b..]));
+    }
+    if let Some((_, b, se, ep)) = find_nxnn(base) {
+        return mk(se, ep, None, title_after(&base[b..]));
+    }
+    if let Some((date, y, m, d)) = find_date(base) {
+        let mut e = mk(y, m * 100 + d, None, None)?;
+        e.date = Some(date);
+        return Some(e);
+    }
+    // Drop the show's name from the front ("Show - 105", "Show Ep 3").
+    let mut rest = base.to_string();
+    let rk = show_key(show);
+    let mut cut = 0;
+    for (i, _) in base.char_indices() {
+        if show_key(&base[..i]) == rk {
+            cut = i;
+        }
+    }
+    if !rk.is_empty() && show_key(base).starts_with(&rk) && cut > 0 {
+        rest = base[cut..].to_string();
+    }
+    let rest_t = rest.trim_start_matches(|c: char| !c.is_alphanumeric());
+    let l = rest_t.to_ascii_lowercase();
+    let after_word = ["episode", "ep", "e"].iter().find_map(|w| {
+        let r = l.strip_prefix(w)?;
+        r.starts_with(|c: char| c.is_ascii_digit() || c == ' ' || c == '.').then(|| rest_t.len() - r.len())
+    });
+    let num_from = rest_t[after_word.unwrap_or(0)..].trim_start_matches([' ', '.', '_', '-']);
+    let n = num_from.chars().take_while(|c| c.is_ascii_digit()).count();
+    if n == 0 || n > 4 {
+        return None;
+    }
+    let num: u32 = num_from[..n].parse().ok()?;
+    if n == 4 && year_at(&num_from[..n]).is_some() {
+        return None;
+    }
+    let title = title_after(&num_from[n..]);
+    match dir_season {
+        Some(season) => mk(season, num, None, title),
+        None => {
+            // No season anywhere: absolute numbering (mapped to real seasons once matched).
+            let mut e = mk(1, num, None, title)?;
+            e.absolute = Some(num);
+            Some(e)
+        }
+    }
 }
 
 /// Lowercase letters and digits only, so "The Office (US)" and "the.office.us" group together.
@@ -233,31 +407,6 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    pub fn build(entries: &[Entry]) -> Self {
-        let mut shows: HashMap<String, Show> = HashMap::new();
-        let mut movies = Vec::new();
-        for e in entries {
-            if crate::library::is_audio(&e.path) || crate::playlist::is_playlist(&e.path) {
-                continue;
-            }
-            match episode(&e.path) {
-                Some(ep) => {
-                    let key = show_key(&ep.show);
-                    let show = shows.entry(key.clone()).or_insert_with(|| Show { key, name: ep.show.clone(), episodes: vec![] });
-                    show.episodes.push((ep, e.clone()));
-                }
-                None => movies.push(e.clone()),
-            }
-        }
-        let mut shows: Vec<Show> = shows.into_values().collect();
-        for s in &mut shows {
-            s.episodes.sort_by(|a, b| (a.0.season, a.0.episode).cmp(&(b.0.season, b.0.episode)).then_with(|| natural_key(&a.1.name).cmp(&natural_key(&b.1.name))));
-        }
-        shows.sort_by_cached_key(|s| natural_key(s.name.trim_start_matches("The ")));
-        movies.sort_by_cached_key(|e| natural_key(&movie_title(&e.name).0));
-        Catalog { shows, movies }
-    }
-
     pub fn show(&self, key: &str) -> Option<&Show> {
         self.shows.iter().find(|s| s.key == key)
     }
@@ -292,6 +441,28 @@ mod tests {
     }
 
     #[test]
+    fn plex_folders_and_episodes() {
+        let f = folder_title("The Office (US) (2005) {tvdb-73244}");
+        assert_eq!((f.title.as_str(), f.year, f.tvdb, f.tmdb), ("The Office (US)", Some(2005), Some(73244), None));
+        let f = folder_title("Heat (1995) [tmdb-949]");
+        assert_eq!((f.title.as_str(), f.year, f.tmdb), ("Heat", Some(1995), Some(949)));
+        assert_eq!(folder_title("Breaking Bad").title, "Breaking Bad");
+        let d = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let e = tv_episode("Firefly", &d(&["Season 1"]), "Firefly - S01E02 - Bushwhacked").unwrap();
+        assert_eq!((e.season, e.episode, e.title.as_deref()), (1, 2, Some("Bushwhacked")));
+        let e = tv_episode("Firefly", &d(&["Specials"]), "03 - Serenity Featurette").unwrap();
+        assert_eq!((e.season, e.episode), (0, 3));
+        let e = tv_episode("The Daily Show", &[], "The Daily Show 2024-03-05").unwrap();
+        assert_eq!((e.date.as_deref(), e.code()), (Some("2024-03-05"), "2024-03-05".to_string()));
+        let e = tv_episode("One Piece", &[], "One Piece - 105 - The Ultimate Battle").unwrap();
+        assert_eq!((e.absolute, e.season, e.episode, e.code()), (Some(105), 1, 105, "E105".to_string()));
+        let e = tv_episode("Show", &d(&["Season 2"]), "Show S02E01-E02 - pt2").unwrap();
+        assert_eq!((e.episode, e.episode_end, e.part), (1, Some(2), Some(2)));
+        assert_eq!(split_part("Movie (2000) - cd2"), ("Movie (2000)", Some(2)));
+        assert_eq!(split_part("Apartment 1"), ("Apartment 1", None));
+    }
+
+    #[test]
     fn movies() {
         assert_eq!(movie_title("Blade.Runner.1982.Final.Cut.1080p.BluRay.mkv"), ("Blade Runner".into(), Some(1982)));
         assert_eq!(movie_title("2001 A Space Odyssey (1968).mkv"), ("2001 A Space Odyssey".into(), Some(1968)));
@@ -299,12 +470,4 @@ mod tests {
         assert_eq!(movie_title("[YTS] Arrival.2016.720p.mp4"), ("Arrival".into(), Some(2016)));
     }
 
-    #[test]
-    fn catalog_groups_shows() {
-        let e = |p: &str| Entry { name: Path::new(p).file_name().unwrap().to_string_lossy().into(), path: p.into(), is_dir: false, size: 1, modified: None, subs: vec![] };
-        let c = Catalog::build(&[e("/a/the.office.us.s01e02.mkv"), e("/b/The Office US - S01E01.mkv"), e("/m/Heat.1995.mkv")]);
-        assert_eq!(c.shows.len(), 1);
-        assert_eq!(c.shows[0].episodes.iter().map(|x| x.0.episode).collect::<Vec<_>>(), [1, 2]);
-        assert_eq!(c.movies.len(), 1);
-    }
 }

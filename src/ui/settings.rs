@@ -228,20 +228,28 @@ impl App {
                     Some(Row::Opt(o, _)) if a != Action::Options => self.opt_adjust(ctx, o, dir),
                     Some(Row::Theme(i)) if a == Action::Accept => self.set_theme(ctx, i),
                     Some(Row::Root(p)) if a == Action::Options => {
-                        self.cfg.roots.retain(|r| *r != p);
-                        self.cfg.save();
+                        self.cfg.remove_library(&p);
                         self.toast(format!("Removed {}", p.display()));
+                        self.library_changed();
+                    }
+                    // ◀ ▶ switch a library between Movies and TV Shows.
+                    Some(Row::Root(p)) if a == Action::Left || a == Action::Right => {
+                        use crate::config::LibraryKind;
+                        let kind = self.cfg.libraries.iter().find(|l| l.path == p).map(|l| l.kind).unwrap_or_default();
+                        let new = if kind == LibraryKind::Movies { LibraryKind::Shows } else { LibraryKind::Movies };
+                        self.cfg.add_library(&p, new);
+                        self.db.forget_under(&p);
+                        self.toast(format!("{} is now a {} library", p.display(), new.label()));
+                        self.library_changed();
                     }
                     Some(Row::Root(p)) if a == Action::Accept => {
                         self.overlay = Overlay::None;
                         self.open_dir(p, None);
                     }
                     Some(Row::AddRoot) if a == Action::Accept => {
-                        if let Source::Dir(d) = &self.source {
-                            if !self.cfg.roots.contains(d) {
-                                self.cfg.roots.push(d.clone());
-                                self.cfg.save();
-                                self.toast(format!("Added {}", d.display()));
+                        if let Source::Dir(d) = self.source.clone() {
+                            if !self.cfg.roots.contains(&d) {
+                                self.toggle_library(&d);
                             }
                         } else {
                             self.toast("Open a folder in the browser first");
@@ -400,9 +408,14 @@ impl App {
                     stepper(&self.opt_value(*o));
                 }
                 Row::Root(path) => {
-                    text_clip(&p, pos2(lx, cy), rr.width() - 260.0, &path.display().to_string(), 16.0, fg);
+                    text_clip(&p, pos2(lx, cy), rr.width() - 380.0, &path.display().to_string(), 16.0, fg);
+                    let kind = self.cfg.libraries.iter().find(|l| l.path == *path).map(|l| l.kind).unwrap_or_default();
                     let cap = self.glyph(Context::List, Action::Options).map(|g| g.0).unwrap_or_default();
-                    text(&p, pos2(rx, cy), Align2::RIGHT_CENTER, format!("{cap} remove"), 13.0, dimc);
+                    let rm = text(&p, pos2(rx, cy), Align2::RIGHT_CENTER, format!("{cap} remove"), 13.0, dimc);
+                    let kx = rm.left() - 30.0;
+                    text(&p, pos2(kx - 150.0, cy), Align2::LEFT_CENTER, "◀", 11.0, dimc);
+                    text(&p, pos2(kx - 75.0, cy), Align2::CENTER_CENTER, kind.label(), 14.0, fg);
+                    text(&p, pos2(kx, cy), Align2::RIGHT_CENTER, "▶", 11.0, dimc);
                 }
                 Row::AddRoot => {
                     let label = match &self.source {
@@ -482,7 +495,7 @@ impl App {
             let hy = rect.bottom() - 20.0;
             let list: &[(Action, &str)] = match self.settings_tab {
                 6 => &[(Action::Accept, "Rebind"), (Action::Options, "Clear"), (Action::Right, "Gamepad / Keyboard"), (Action::NextTab, "Section"), (Action::Back, "Close")],
-                1 => &[(Action::Accept, "Open / add"), (Action::Options, "Remove"), (Action::NextTab, "Section"), (Action::Back, "Close")],
+                1 => &[(Action::Accept, "Open / add"), (Action::Right, "Movies / TV"), (Action::Options, "Remove"), (Action::NextTab, "Section"), (Action::Back, "Close")],
                 5 => &[(Action::Down, "Move (previews)"), (Action::Accept, "Use"), (Action::NextTab, "Section"), (Action::Back, "Close")],
                 _ => &[(Action::Right, "Change"), (Action::Down, "Move"), (Action::NextTab, "Section"), (Action::Back, "Close")],
             };

@@ -42,6 +42,7 @@ impl App {
             Source::Show(key) => ("TV shows / ".into(), self.catalog.show(key).map(|s| s.name.clone()).unwrap_or_default()),
             Source::Playlists => (String::new(), "Playlists".into()),
             Source::Playlist(pl) => ("Playlists / ".into(), crate::playlist::name(pl)),
+            Source::Added => (String::new(), "Recently added".into()),
         };
         let max_path = (rect.width() * 0.35).max(120.0);
         if !parent.is_empty() {
@@ -81,6 +82,22 @@ impl App {
         };
         text(&p, pos2(fr.right() + 18.0, hy), Align2::LEFT_CENTER, count, 14.0, pal.dim);
         text(&p, pos2(rect.right() - PAD, hy), Align2::RIGHT_CENTER, clock_at(now_unix()), 16.0, pal.dim);
+
+        // ---- background art of the selected show/movie, faint behind the list
+        let backdrop = self.items.get(self.focus).cloned().and_then(|it| self.info_for(&it).and_then(|i| i.backdrop.clone()));
+        if let Some(tex) = backdrop.and_then(|src| self.art(ui.ctx(), &src, crate::scrape::ImgKind::Backdrop)) {
+            let [tw, th] = tex.size();
+            let (want, have) = (list_rect.width() / list_rect.height(), tw as f32 / th.max(1) as f32);
+            let uv = if have > want {
+                let u = (1.0 - want / have) / 2.0;
+                Rect::from_min_max(pos2(u, 0.0), pos2(1.0 - u, 1.0))
+            } else {
+                let v = (1.0 - have / want) / 2.0;
+                Rect::from_min_max(pos2(0.0, v), pos2(1.0, 1.0 - v))
+            };
+            p.image(tex.id(), list_rect, uv, egui::Color32::WHITE);
+            p.rect_filled(list_rect, 0.0, draw::with_alpha(pal.bg, 0.86));
+        }
 
         // ---- list
         let seasons = match &self.source {
@@ -277,6 +294,8 @@ impl App {
                     Source::Show(_) => "No episodes".into(),
                     Source::Playlists => "No playlists yet. Select a video and press Add to playlist.".into(),
                     Source::Playlist(_) => "This playlist is empty".into(),
+                Source::Added if self.loading => "Looking through your folders…".into(),
+                Source::Added => "Nothing in your libraries yet. Add folders in Settings → Library.".into(),
                 })
             } else {
                 None
@@ -352,10 +371,22 @@ impl App {
         };
 
         // ---- poster beside title / year / rating / genres
-        let poster = info.as_ref().and_then(|i| i.poster.clone()).and_then(|pp| self.poster(ui.ctx(), &pp));
+        // Episodes: the still across the top, and the season's poster beside the title.
+        if let Some(still) = ep_info.as_ref().and_then(|e| e.still.clone()) {
+            if let Some(tex) = self.art(ui.ctx(), &still, crate::scrape::ImgKind::Still) {
+                let [tw, th] = tex.size();
+                let sh = inner * th as f32 / tw.max(1) as f32;
+                let sr = Rect::from_min_size(pos2(x, y), vec2(inner, sh.min(r.height() * 0.3)));
+                p.image(tex.id(), sr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), egui::Color32::WHITE);
+                y = sr.bottom() + 14.0;
+            }
+        }
+        let poster_src = if item.ep.is_some() { self.tile_art(&item, false) } else { info.as_ref().and_then(|i| i.poster.clone()) };
+        let poster = poster_src.and_then(|src| self.art(ui.ctx(), &src, crate::scrape::ImgKind::Poster));
         if let Some(tex) = poster {
             let [tw, th] = tex.size();
-            let ph = (r.height() * 0.32).min(260.0);
+            let has_still = ep_info.as_ref().is_some_and(|e| e.still.is_some());
+            let ph = if has_still { (r.height() * 0.2).min(170.0) } else { (r.height() * 0.32).min(260.0) };
             let pw = (ph * tw as f32 / th.max(1) as f32).min(inner * 0.45);
             let ph = pw * th as f32 / tw.max(1) as f32;
             let pr = Rect::from_min_size(pos2(x, y), vec2(pw, ph));

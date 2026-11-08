@@ -58,7 +58,11 @@ fn load_toml<T: for<'de> Deserialize<'de> + Default>(path: &Path) -> T {
 #[serde(default)]
 pub struct Config {
     pub theme: String,
-    /// Folders shown in the menu. The first one opens on startup.
+    /// Library folders, each holding Movies or TV shows (like Plex libraries).
+    pub libraries: Vec<Library>,
+    /// The library folders' paths (kept in step with `libraries`). Old configs listed plain
+    /// folders here; they're turned into libraries on load.
+    #[serde(skip_serializing)]
     pub roots: Vec<PathBuf>,
     pub start_fullscreen: bool,
     /// Multiplies every size in the UI.
@@ -105,6 +109,40 @@ pub struct Config {
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
+pub enum LibraryKind {
+    #[default]
+    Movies,
+    Shows,
+}
+
+impl LibraryKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            LibraryKind::Movies => "Movies",
+            LibraryKind::Shows => "TV Shows",
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Library {
+    pub path: PathBuf,
+    pub kind: LibraryKind,
+}
+
+/// For folders from old configs: TV if it's named like it or mostly holds SxxExx files.
+pub fn guess_kind(dir: &Path) -> LibraryKind {
+    let name = dir.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    if ["tv", "show", "series", "anime"].iter().any(|w| name.contains(w)) {
+        return LibraryKind::Shows;
+    }
+    let l = crate::library::list_all(&[dir.to_path_buf()]);
+    let eps = l.entries.iter().filter(|e| crate::media::episode(&e.path).is_some()).count();
+    if eps * 2 > l.entries.len() && eps > 0 { LibraryKind::Shows } else { LibraryKind::Movies }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum Repeat {
     #[default]
     Off,
@@ -140,6 +178,7 @@ impl Default for Config {
         let home = home.map(|u| u.home_dir().to_path_buf());
         Self {
             theme: crate::theme::DEFAULT_THEME.into(),
+            libraries: vec![],
             roots: videos.or(home).into_iter().collect(),
             start_fullscreen: false,
             ui_scale: 1.0,
@@ -179,7 +218,29 @@ impl Config {
         c.volume_max = c.volume_max.clamp(100, 200);
         c.ui_scale = c.ui_scale.clamp(0.5, 3.0);
         c.readahead_mb = c.readahead_mb.clamp(8, 1024);
+        if c.libraries.is_empty() && !c.roots.is_empty() {
+            c.libraries = c.roots.iter().map(|r| Library { path: r.clone(), kind: guess_kind(r) }).collect();
+            c.save();
+        }
+        c.sync_roots();
         c
+    }
+
+    fn sync_roots(&mut self) {
+        self.roots = self.libraries.iter().map(|l| l.path.clone()).collect();
+    }
+
+    pub fn add_library(&mut self, path: &Path, kind: LibraryKind) {
+        self.libraries.retain(|l| l.path != path);
+        self.libraries.push(Library { path: path.to_path_buf(), kind });
+        self.sync_roots();
+        self.save();
+    }
+
+    pub fn remove_library(&mut self, path: &Path) {
+        self.libraries.retain(|l| l.path != path);
+        self.sync_roots();
+        self.save();
     }
 
     pub fn save(&self) {

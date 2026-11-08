@@ -18,7 +18,7 @@ const LOADS_PER_FRAME: usize = 3;
 impl App {
     /// Lists where every row has (or can have) its own poster.
     pub(crate) fn grid_capable(&self) -> bool {
-        matches!(self.source, Source::All | Source::Movies | Source::Shows | Source::Continue | Source::Recent | Source::Playlist(_))
+        matches!(self.source, Source::All | Source::Movies | Source::Shows | Source::Show(_) | Source::Added | Source::Continue | Source::Recent | Source::Playlist(_))
     }
 
     pub(crate) fn grid_active(&self) -> bool {
@@ -35,10 +35,11 @@ impl App {
         }
     }
 
-    /// Column count and tile width for a grid in `width`: tiles of ~150–190 px.
-    fn grid_layout(width: f32) -> (usize, f32) {
+    /// Column count and tile width for a grid in `width`: posters ~165 px, stills ~260 px.
+    fn grid_layout(width: f32, wide: bool) -> (usize, f32) {
         let inner = width - PAD * 2.0;
-        let cols = ((inner + GAP) / (165.0 + GAP)).floor().max(1.0) as usize;
+        let target = if wide { 260.0 } else { 165.0 };
+        let cols = ((inner + GAP) / (target + GAP)).floor().max(1.0) as usize;
         let tile_w = (inner - GAP * (cols - 1) as f32) / cols as f32;
         (cols, tile_w)
     }
@@ -48,9 +49,12 @@ impl App {
         let mut out = Vec::new();
         let p = ui.painter().clone();
         let area = Rect::from_min_max(pos2(area.left(), area.top() + 8.0), area.max);
-        let (cols, tile_w) = Self::grid_layout(area.width());
+        // A show's page: 16:9 episode stills instead of posters.
+        let wide = matches!(self.source, Source::Show(_));
+        let aspect = if wide { 9.0 / 16.0 } else { ASPECT };
+        let (cols, tile_w) = Self::grid_layout(area.width(), wide);
         self.grid_cols = cols;
-        let tile_h = tile_w * ASPECT + CAPTION_H;
+        let tile_h = tile_w * aspect + CAPTION_H;
         let row_h = tile_h + GAP;
         let n = self.items.len();
         let rows = n.div_ceil(cols);
@@ -87,20 +91,17 @@ impl App {
                 let Some(item) = self.items.get(idx).cloned() else { break };
                 let x = area.left() + PAD + col as f32 * (tile_w + GAP);
                 let y = y0 + (row - first_row) as f32 * row_h;
-                let poster_r = Rect::from_min_size(pos2(x, y), vec2(tile_w, tile_w * ASPECT));
+                let poster_r = Rect::from_min_size(pos2(x, y), vec2(tile_w, tile_w * aspect));
                 let focused = idx == self.focus;
 
-                // Look up anything on screen that hasn't been (local files first, then online).
-                if let Some(q) = self.query_for(&item) {
-                    self.want_scrape_quiet(q);
-                }
-                let poster_path = self.info_for(&item).and_then(|i| i.poster.clone());
-                let tex = match poster_path {
-                    Some(pp) if self.poster_loaded(&pp) || loads < LOADS_PER_FRAME => {
-                        if !self.poster_loaded(&pp) {
+                // Art loads on demand: a few new textures per frame, downloads in the background.
+                let kind = if wide { crate::scrape::ImgKind::Still } else { crate::scrape::ImgKind::Poster };
+                let tex = match self.tile_art(&item, wide) {
+                    Some(src) if self.art_ready(&src) || loads < LOADS_PER_FRAME => {
+                        if !self.art_ready(&src) {
                             loads += 1;
                         }
-                        self.poster(ui.ctx(), &pp)
+                        self.art(ui.ctx(), &src, kind)
                     }
                     Some(_) => {
                         pending = true;
@@ -183,8 +184,27 @@ impl App {
         out
     }
 
+    /// The image a tile shows: an episode's still on a show's page, else the poster
+    /// (an episode elsewhere shows its season's poster, or the show's).
+    pub(crate) fn tile_art(&self, item: &super::Item, wide: bool) -> Option<String> {
+        let info = self.info_for(item)?;
+        if let Some(e) = &item.ep {
+            let ep = info.episodes.get(&crate::scrape::ep_key(e.season, e.episode));
+            if wide {
+                return ep.and_then(|x| x.still.clone()).or_else(|| info.backdrop.clone());
+            }
+            return info.seasons.get(&e.season).and_then(|s| s.poster.clone()).or_else(|| info.poster.clone());
+        }
+        info.poster.clone()
+    }
+
     /// Title and second line under a tile.
     fn grid_caption(&self, item: &super::Item) -> (String, String) {
+        if let (Source::Show(_), Some(e)) = (&self.source, &item.ep) {
+            let t = self.episode_title(&item.entry.path, e).unwrap_or_else(|| format!("Episode {}", e.episode));
+            let aired = self.info_for(item).and_then(|i| i.episodes.get(&crate::scrape::ep_key(e.season, e.episode))).map(|x| x.aired.clone()).unwrap_or_default();
+            return (format!("{}  {t}", e.code()), aired);
+        }
         if let Some(show) = item.show.as_ref().and_then(|k| self.catalog.show(k)) {
             let title = self.info_for(item).map(|i| i.title.clone()).filter(|t| !t.is_empty()).unwrap_or_else(|| show.name.clone());
             let ns = show.seasons().len();

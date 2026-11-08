@@ -6,6 +6,7 @@ mod grid;
 mod osk;
 mod overlays;
 mod player_view;
+mod library_ui;
 mod playlists;
 mod settings;
 
@@ -38,6 +39,26 @@ pub enum Overlay {
     Settings,
     /// "Add to playlist" picker.
     AddToPlaylist,
+    /// Fix Match: search TMDB and pick the right show/movie.
+    FixMatch,
+    /// "Movies or TV Shows?" when adding a library folder.
+    LibraryKind,
+}
+
+/// Fix Match panel state.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct FixMatch {
+    /// Database key of the show/movie being fixed.
+    pub key: String,
+    pub show: bool,
+    pub query: String,
+    /// Query of the search in flight / last finished.
+    pub searched: String,
+    pub results: Vec<crate::scrape::Candidate>,
+    pub error: Option<String>,
+    pub busy: bool,
+    /// 0 = the search box, then results.
+    pub focus: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -57,6 +78,8 @@ pub enum Source {
     Playlists,
     /// One playlist's entries.
     Playlist(PathBuf),
+    /// Newest files in the libraries.
+    Added,
 }
 
 impl Source {
@@ -64,14 +87,6 @@ impl Source {
     pub fn from_catalog(&self) -> bool {
         matches!(self, Source::Movies | Source::Shows | Source::Show(_))
     }
-}
-
-/// The show's folder for an episode: its parent, or the grandparent above "Season N".
-pub(crate) fn show_dir(episode: &Path) -> Option<PathBuf> {
-    let parent = episode.parent()?;
-    let name = parent.file_name()?.to_string_lossy().to_ascii_lowercase();
-    let is_season = name.starts_with("season") || name.starts_with("series") || (name.starts_with('s') && name[1..].chars().all(|c| c.is_ascii_digit()) && name.len() > 1);
-    Some(if is_season { parent.parent()?.to_path_buf() } else { parent.to_path_buf() })
 }
 
 /// Stand-in path for a show row (rows are keyed by path).
@@ -205,10 +220,17 @@ pub struct App {
     pub(crate) confirm_clear: Option<Instant>,
 
     sys: System,
-    /// Posters, titles and descriptions (see scrape.rs).
-    pub(crate) scrape: crate::scrape::Cache,
+    /// The matched library: shows, movies, files, artwork (see libdb.rs).
+    pub(crate) db: crate::libdb::Db,
     scraper: crate::scrape::Scraper,
-    scrape_wait: Option<(String, Instant)>,
+    /// The last library scan, by path (for building rows from the database).
+    entry_map: std::collections::HashMap<PathBuf, Entry>,
+    last_scan: Instant,
+    /// Fix Match panel state.
+    pub(crate) fix: Option<FixMatch>,
+    /// Folder waiting for "Movies or TV Shows?" when adding a library.
+    pub(crate) lib_pending: Option<PathBuf>,
+    pub(crate) lib_focus: usize,
     last_scrape_write: Instant,
     /// Poster textures, most recently used last (a handful at most).
     posters: Vec<(PathBuf, egui::TextureHandle)>,
@@ -324,9 +346,13 @@ impl App {
             at_end: false,
             confirm_clear: None,
             sys: System::new(ctx.clone()),
-            scrape: crate::scrape::Cache::load(),
+            db: crate::libdb::Db::load(),
             scraper: crate::scrape::Scraper::new(ctx.clone()),
-            scrape_wait: None,
+            entry_map: Default::default(),
+            last_scan: Instant::now(),
+            fix: None,
+            lib_pending: None,
+            lib_focus: 0,
             last_scrape_write: Instant::now(),
             posters: vec![],
             meta_cache: MetaCache::load(),
@@ -445,6 +471,17 @@ impl App {
                     self.set_items(vec![]);
                 }
             }
+            Source::Added => {
+                self.remember_focus();
+                self.source = src;
+                self.filter.clear();
+                self.list_error = None;
+                if self.all_cache.is_none() {
+                    self.loading = true;
+                    self.scanner.request_all(&self.cfg.roots);
+                }
+                self.rebuild_added_view();
+            }
             Source::Playlists | Source::Playlist(_) => {
                 self.remember_focus();
                 self.source = src;
@@ -542,7 +579,7 @@ impl App {
             // Name a new playlist after the show, or the folder the first file is in.
             let base = files
                 .first()
-                .and_then(|f| crate::media::episode(f).map(|e| e.show).or_else(|| f.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned())))
+                .and_then(|f| self.episode_of(f).map(|e| e.show).or_else(|| f.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned())))
                 .unwrap_or_else(|| "Playlist".into());
             crate::playlist::new_path(&base)
         });
@@ -635,22 +672,35 @@ impl App {
 
     /// Add a folder to the library, or remove it if it's already there.
     pub(crate) fn toggle_library(&mut self, dir: &Path) {
-        if let Some(i) = self.cfg.roots.iter().position(|r| r == dir) {
-            self.cfg.roots.remove(i);
+        if self.cfg.roots.iter().any(|r| r == dir) {
+            self.cfg.remove_library(dir);
             self.toast(format!("Removed {} from your library", dir.display()));
+            self.library_changed();
         } else {
-            self.cfg.roots.push(dir.to_path_buf());
-            self.toast(format!("Added {} to your library", dir.display()));
+            // Ask what it holds first (Overlay::LibraryKind).
+            self.lib_pending = Some(dir.to_path_buf());
+            self.lib_focus = if crate::config::guess_kind(dir) == crate::config::LibraryKind::Shows { 1 } else { 0 };
+            self.overlay = Overlay::LibraryKind;
         }
-        self.cfg.save();
-        // My media needs a fresh scan with the new set of folders.
+    }
+
+    pub(crate) fn add_library(&mut self, dir: &Path, kind: crate::config::LibraryKind) {
+        self.cfg.add_library(dir, kind);
+        self.toast(format!("Added {} as {}", dir.display(), kind.label()));
+        self.library_changed();
+    }
+
+    /// Library folders changed: rescan everything.
+    pub(crate) fn library_changed(&mut self) {
         self.all_cache = None;
+        self.scanner.request_all(&self.cfg.roots);
+        self.loading = true;
     }
 
     fn item(&self, entry: Entry) -> Item {
         let hist = self.hist.get(&entry.path).cloned();
         let meta = self.meta_cache.get(&entry.path, entry.size, entry.modified).cloned();
-        let ep = if entry.is_dir { None } else { crate::media::episode(&entry.path) };
+        let ep = if entry.is_dir { None } else { self.episode_of(&entry.path) };
         Item { entry, hist, meta, show: None, ep }
     }
 
@@ -722,106 +772,148 @@ impl App {
         crate::scrape::Settings { online: self.cfg.online_metadata, tmdb_key: self.cfg.tmdb_api_key.clone() }
     }
 
-    /// What to look up for a row: its show, or the movie it is. Library files only.
-    pub(crate) fn query_for(&self, item: &Item) -> Option<crate::scrape::Query> {
-        use crate::scrape::Query;
-        if let Some(key) = &item.show {
-            let show = self.catalog.show(key)?;
-            return Some(Query::Show { name: show.name.clone(), dir: show_dir(&show.episodes.first()?.1.path) });
+    /// The episode a file is: from the library database, else guessed from its name.
+    pub(crate) fn episode_of(&self, path: &Path) -> Option<crate::media::Episode> {
+        match self.db.file(path) {
+            Some(f) => f.ep.clone(),
+            None => crate::media::episode(path),
         }
-        if item.entry.is_dir || !self.in_library(&item.entry.path) || crate::playlist::is_playlist(&item.entry.path) || crate::library::is_audio(&item.entry.path) {
-            return None;
-        }
-        self.query_for_path(&item.entry.path)
     }
 
-    pub(crate) fn query_for_path(&self, path: &Path) -> Option<crate::scrape::Query> {
-        use crate::scrape::Query;
-        match crate::media::episode(path) {
-            Some(e) => Some(Query::Show { name: e.show, dir: show_dir(path) }),
-            None => {
-                let (title, year) = crate::media::movie_title(&path.file_name()?.to_string_lossy());
-                Some(Query::Movie { title, year, file: path.to_path_buf() })
-            }
+    /// Database key of the show or movie a row is.
+    pub(crate) fn key_of(&self, item: &Item) -> Option<String> {
+        if let Some(k) = &item.show {
+            return Some(k.clone());
         }
+        self.db.file(&item.entry.path).map(|f| f.item.clone())
     }
 
     pub(crate) fn info_for_path(&self, path: &Path) -> Option<&crate::scrape::Info> {
-        self.scrape.get(&self.query_for_path(path)?.key())
+        let f = self.db.file(path)?;
+        self.db.item(&f.item).map(|i| &i.info).filter(|i| !i.title.is_empty() || i.poster.is_some())
     }
 
     pub(crate) fn info_for(&self, item: &Item) -> Option<&crate::scrape::Info> {
-        self.scrape.get(&self.query_for(item)?.key())
+        let key = self.key_of(item)?;
+        self.db.item(&key).map(|i| &i.info).filter(|i| !i.title.is_empty() || i.poster.is_some())
     }
 
-    fn want_scrape(&mut self, q: crate::scrape::Query) {
-        // Local .nfo/posters are read even with online lookups off (scrape.rs checks the setting).
-        if !self.scrape.settled(&q.key()) {
-            let s = self.scrape_settings();
-            self.scraper.request(q, s);
+    /// What the matcher needs to know about a show/movie.
+    fn match_req(&self, key: &str) -> Option<crate::scrape::MatchReq> {
+        let it = self.db.item(key)?;
+        let show = self.db.is_show(key);
+        let file = if show { None } else { self.db.files.iter().find(|(_, f)| f.item == key).map(|(p, _)| p.clone()) };
+        Some(crate::scrape::MatchReq {
+            key: key.to_string(),
+            show,
+            title: it.title.clone(),
+            year: it.year,
+            tmdb: it.hint_tmdb,
+            tvdb: it.hint_tvdb,
+            imdb: it.hint_imdb.clone(),
+            folder: it.folders.first().cloned().filter(|f| show || f.is_dir()),
+            file,
+        })
+    }
+
+    /// Queue every unmatched show/movie (one at a time on the matcher thread).
+    fn match_pending(&mut self) {
+        let settings = self.scrape_settings();
+        for key in self.db.unmatched() {
+            if let Some(req) = self.match_req(&key) {
+                self.scraper.request(req, settings.clone());
+            }
         }
     }
 
-    /// Look up the selected row's show or movie after a short pause (like probing).
-    fn schedule_scrape(&mut self, ctx: &egui::Context) {
-        const PAUSE: Duration = Duration::from_millis(350);
-        if self.screen != Screen::Browser {
-            self.scrape_wait = None;
-            return;
-        }
-        // A show's page always wants its show.
-        if let Source::Show(key) = &self.source {
-            if let Some(show) = self.catalog.show(key) {
-                let q = crate::scrape::Query::Show { name: show.name.clone(), dir: show.episodes.first().and_then(|e| show_dir(&e.1.path)) };
-                self.want_scrape(q);
-            }
-        }
-        let Some(q) = self.items.get(self.focus).and_then(|i| self.query_for(i)) else {
-            self.scrape_wait = None;
-            return;
-        };
-        let key = q.key();
-        if self.scrape.settled(&key) {
-            self.scrape_wait = None;
-            return;
-        }
-        match &self.scrape_wait {
-            Some((k, since)) if *k == key => {
-                if since.elapsed() >= PAUSE {
-                    self.want_scrape(q);
-                    self.scrape_wait = None;
-                } else {
-                    ctx.request_repaint_after(PAUSE - since.elapsed());
-                }
-            }
-            _ => {
-                self.scrape_wait = Some((key, Instant::now()));
-                ctx.request_repaint_after(PAUSE);
-            }
-        }
+    /// A library scan finished: update the database, the Movies/TV views and start matching.
+    fn on_library_scan(&mut self, entries: &[Entry]) {
+        self.entry_map = entries.iter().map(|e| (e.path.clone(), e.clone())).collect();
+        self.db.merge(entries, &self.cfg.libraries, crate::config::now_unix());
+        self.catalog = self.db.catalog(&self.entry_map);
+        self.last_scan = Instant::now();
+        self.match_pending();
     }
 
     fn take_scrape_results(&mut self) {
-        for (key, info) in self.scraper.poll() {
-            // A new poster file replaces the old texture.
-            if let Some(p) = &info.poster {
-                self.posters.retain(|(pp, _)| pp != p);
+        let mut changed = false;
+        for done in self.scraper.poll() {
+            match done {
+                crate::scrape::Done::Matched { key, tmdb, info, manual } => {
+                    let new_key = self.db.apply_match(&key, tmdb, info, manual);
+                    if let Source::Show(k) = &self.source {
+                        if *k == key {
+                            self.source = Source::Show(new_key.clone());
+                        }
+                    }
+                    if self.fix.as_ref().is_some_and(|f| f.key == key) {
+                        self.fix = None;
+                        self.overlay = Overlay::None;
+                        let name = self.db.item(&new_key).map(|i| i.name().to_string()).unwrap_or_default();
+                        self.toast(format!("Matched: {name}"));
+                    }
+                    changed = true;
+                }
+                crate::scrape::Done::Results { query, list, error } => {
+                    if let Some(f) = self.fix.as_mut().filter(|f| f.searched == query) {
+                        f.busy = false;
+                        f.results = list;
+                        f.error = error;
+                        f.focus = if f.results.is_empty() { 0 } else { 1 };
+                    }
+                }
+                crate::scrape::Done::Image { src, path } => {
+                    if let Some(p) = path {
+                        self.posters.retain(|(pp, _)| *pp != p);
+                        self.db.images.insert(src, p);
+                        self.db.touch();
+                    }
+                }
             }
-            self.scrape.insert(key, info);
+        }
+        if changed {
+            self.catalog = self.db.catalog(&self.entry_map);
+            if self.source.from_catalog() {
+                self.rebuild_catalog_view();
+            }
         }
         if self.last_scrape_write.elapsed() > Duration::from_secs(30) {
             self.last_scrape_write = Instant::now();
-            self.scrape.save_if_dirty();
+            self.db.save_if_dirty();
         }
     }
 
-    /// Like `want_scrape`, for tiles scrolling past in the grid.
-    pub(crate) fn want_scrape_quiet(&mut self, q: crate::scrape::Query) {
-        self.want_scrape(q);
+    /// Rescan the libraries now and then (new files show up without restarting).
+    fn schedule_rescan(&mut self, ctx: &egui::Context) {
+        const EVERY: Duration = Duration::from_secs(10 * 60);
+        if self.screen == Screen::Browser && self.last_scan.elapsed() > EVERY && !self.loading {
+            self.last_scan = Instant::now();
+            self.scanner.request_all(&self.cfg.roots);
+        }
+        // No timer of its own: the browser clock already wakes the UI every 20 s.
+        let _ = ctx;
     }
 
     pub(crate) fn poster_loaded(&self, path: &Path) -> bool {
         self.posters.iter().any(|(p, _)| p == path)
+    }
+
+    /// Texture for an image source (URL or local file): downloads/shrinks it first if needed.
+    pub(crate) fn art(&mut self, ctx: &egui::Context, src: &str, kind: crate::scrape::ImgKind) -> Option<egui::TextureHandle> {
+        match self.db.image(src).cloned() {
+            Some(p) => self.poster(ctx, &p),
+            None => {
+                if self.cfg.online_metadata || !src.starts_with("http") {
+                    self.scraper.image(src, kind);
+                }
+                None
+            }
+        }
+    }
+
+    /// Is the art for `src` ready to draw without a load this frame?
+    pub(crate) fn art_ready(&self, src: &str) -> bool {
+        self.db.image(src).is_some_and(|p| self.poster_loaded(p))
     }
 
     /// Poster texture, loaded on first use; keeps the last few around.
@@ -836,20 +928,27 @@ impl App {
         let tex = ctx.load_texture(path.to_string_lossy(), img, egui::TextureOptions::LINEAR);
         self.posters.push((path.to_path_buf(), tex.clone()));
         // Enough for a screenful of grid tiles (~0.6 MB each on the GPU); a few in list view.
-        let keep = if self.cfg.grid_view { 48 } else { 8 };
+        let keep = if self.cfg.grid_view { 48 } else { 12 };
         while self.posters.len() > keep {
             drop(self.posters.remove(0));
         }
         Some(tex)
     }
 
-    /// Settings → Library → Refresh posters and info.
+    /// Settings → Library → Refresh posters and info: match everything again (except Fix
+    /// Match picks) and re-download art.
     pub(crate) fn refresh_metadata(&mut self) {
-        self.scrape.clear();
-        self.scrape.save_if_dirty();
+        for it in self.db.shows.values_mut().chain(self.db.movies.values_mut()) {
+            if it.state != crate::libdb::MatchState::Manual {
+                it.state = crate::libdb::MatchState::New;
+            }
+        }
+        self.db.images.clear();
+        self.db.touch();
         self.scraper.forget();
         self.posters.clear();
-        self.toast("Posters and info will be looked up again");
+        self.match_pending();
+        self.toast("Matching your library again");
     }
 
     fn remember_focus(&mut self) {
@@ -1004,7 +1103,17 @@ impl App {
 
     /// Play a file; an episode queues up the rest of its show so the next one autoplays.
     pub(crate) fn play_with_queue(&mut self, path: &Path, from_start: bool) {
-        let show = crate::media::episode(path).and_then(|e| self.catalog.show(&crate::media::show_key(&e.show)).cloned());
+        let show = self.episode_of(path).and_then(|e| {
+            let key = if e.key.is_empty() { crate::media::show_key(&e.show) } else { e.key.clone() };
+            self.catalog.show(&key).cloned()
+        });
+        // A split movie plays all its parts in a row.
+        let parts = self.db.movie_parts(path);
+        if show.is_none() && parts.len() > 1 {
+            let idx = parts.iter().position(|p| p == path).unwrap_or(0);
+            let name = self.title_of(path);
+            return self.play_queue(parts, idx, name, from_start);
+        }
         match show {
             Some(show) if show.episodes.iter().any(|(_, f)| f.path == path) => {
                 let list: Vec<PathBuf> = show.episodes.iter().map(|(_, f)| f.path.clone()).collect();
@@ -1082,9 +1191,6 @@ impl App {
         player.load(path, start);
         player.set_loop_file(self.cfg.repeat == crate::config::Repeat::One);
         self.playing_path = Some(path.to_path_buf());
-        if let Some(q) = self.query_for_path(path).filter(|_| self.in_library(path)) {
-            self.want_scrape(q);
-        }
         let e = self.hist.entry(path);
         e.last_played = crate::config::now_unix();
         if from_start {
@@ -1297,7 +1403,7 @@ impl App {
         let mut actions = Vec::new();
         let events = ctx.input(|i| i.events.clone());
         let browser_filtering = self.filtering && self.context() == Context::Browser;
-        let text_mode = self.overlay == Overlay::Palette || browser_filtering;
+        let text_mode = self.overlay == Overlay::Palette || self.overlay == Overlay::FixMatch || browser_filtering;
         for ev in events {
             match ev {
                 egui::Event::Key { key, pressed: true, modifiers, .. } => {
@@ -1316,6 +1422,11 @@ impl App {
                                 self.listening = None;
                             }
                         }
+                        continue;
+                    }
+                    // Fix Match search box: typing, Backspace; Enter/arrows/Esc stay actions.
+                    if self.overlay == Overlay::FixMatch && key == egui::Key::Backspace && self.osk.is_none() {
+                        self.fix_backspace();
                         continue;
                     }
                     if browser_filtering {
@@ -1375,7 +1486,12 @@ impl App {
                     }
                 }
                 egui::Event::Text(t) => {
-                    if browser_filtering && self.listening.is_none() {
+                    if self.overlay == Overlay::FixMatch {
+                        let mods = ctx.input(|i| i.modifiers);
+                        if !mods.ctrl && !mods.mac_cmd && !mods.alt {
+                            self.fix_type(&t);
+                        }
+                    } else if browser_filtering && self.listening.is_none() {
                         let mods = ctx.input(|i| i.modifiers);
                         if !mods.ctrl && !mods.mac_cmd && !mods.alt {
                             self.filter.push_str(&t);
@@ -1591,6 +1707,8 @@ impl App {
             Overlay::Tracks => return self.tracks_action(a),
             Overlay::Settings => return self.settings_action(ctx, a),
             Overlay::AddToPlaylist => return self.add_playlist_action(a),
+            Overlay::FixMatch => return self.fix_action(a),
+            Overlay::LibraryKind => return self.lib_kind_action(a),
             Overlay::None => {}
         }
 
@@ -1606,6 +1724,9 @@ impl App {
         let page = 10;
         if a == ToggleView {
             return self.toggle_grid();
+        }
+        if a == FixMatch {
+            return self.open_fix_match();
         }
         if self.grid_active() && matches!(a, Up | Down | PageUp | PageDown | Left | Right) && self.grid_move(a) {
             return;
@@ -1721,6 +1842,7 @@ impl App {
                 return;
             }
             Replay => return self.replay(),
+            FixMatch => return self.open_fix_match(),
             CycleRepeat => {
                 self.set_repeat(self.cfg.repeat.next());
                 return;
@@ -1765,6 +1887,8 @@ impl App {
             SpeedUp => p.set_speed(p.s.speed + 0.25),
             SpeedDown => p.set_speed(p.s.speed - 0.25),
             SpeedReset => p.set_speed(1.0),
+            FrameStep => p.frame_step(true),
+            FrameBackStep => p.frame_step(false),
             NextSubtitle => p.cycle_track(TrackKind::Sub),
             SubtitlesOff => p.select_track(TrackKind::Sub, None),
             NextAudio => p.cycle_track(TrackKind::Audio),
@@ -1843,7 +1967,7 @@ impl App {
 
     /// How a file is named in the UI: "Show · S01E02 · Title", a movie's title, or the file name.
     pub(crate) fn title_of(&self, path: &Path) -> String {
-        if let Some(e) = crate::media::episode(path) {
+        if let Some(e) = self.episode_of(path) {
             return match self.episode_title(path, &e) {
                 Some(t) => format!("{} · {} · {t}", e.show, e.code()),
                 None => format!("{} · {}", e.show, e.code()),
@@ -2065,12 +2189,15 @@ impl eframe::App for App {
         if let Some(l) = self.scanner.poll() {
             let wanted = if l.all { self.source == Source::All } else { Source::Dir(l.dir.clone()) == self.source };
             if l.all {
-                self.catalog = crate::media::Catalog::build(&l.entries);
+                self.on_library_scan(&l.entries);
                 self.all_cache = Some(l.entries.clone());
                 if self.source.from_catalog() {
                     self.loading = false;
                     self.list_error = l.error.clone();
                     self.rebuild_catalog_view();
+                } else if self.source == Source::Added {
+                    self.list_error = l.error.clone();
+                    self.rebuild_added_view();
                 }
             }
             if wanted {
@@ -2091,7 +2218,7 @@ impl eframe::App for App {
         self.take_probe_results();
         self.schedule_probe(&ctx);
         self.take_scrape_results();
-        self.schedule_scrape(&ctx);
+        self.schedule_rescan(&ctx);
 
         let mut actions = self.collect_input(&ctx);
         actions.extend(self.run_steps(&ctx));
@@ -2121,6 +2248,8 @@ impl eframe::App for App {
             Overlay::Tracks => clicked.extend(self.draw_tracks(ui, rect)),
             Overlay::Settings => clicked.extend(self.draw_settings(ui, rect)),
             Overlay::AddToPlaylist => clicked.extend(self.draw_add_playlist(ui, rect)),
+            Overlay::FixMatch => clicked.extend(self.draw_fix(ui, rect)),
+            Overlay::LibraryKind => clicked.extend(self.draw_lib_kind(ui, rect)),
         }
         self.osk_sync();
         if let Some(o) = self.osk {
@@ -2130,7 +2259,7 @@ impl eframe::App for App {
                     let detail_w = (rect.width() * 0.3).clamp(300.0, 460.0);
                     Rect::from_min_max(rect.min, egui::pos2(rect.right() - detail_w, rect.bottom() - 40.0))
                 }
-                osk::OskTarget::Palette => rect,
+                osk::OskTarget::Palette | osk::OskTarget::FixMatch => rect,
             };
             self.draw_osk(ui, area);
         }
@@ -2160,7 +2289,7 @@ impl eframe::App for App {
         self.record_position();
         self.hist.save_if_dirty();
         self.meta_cache.save_if_dirty();
-        self.scrape.save_if_dirty();
+        self.db.save_if_dirty();
         self.sys.inhibit(false);
         if let Some(p) = self.player.as_mut() {
             p.shutdown();

@@ -385,6 +385,11 @@ impl Player {
         self.select_track(kind, next);
     }
 
+    /// One frame forward / back (mpv pauses on the new frame).
+    pub fn frame_step(&self, forward: bool) {
+        self.cmd(if forward { "frame-step" } else { "frame-back-step" }, &[]);
+    }
+
     /// Loop the current file forever (mpv `loop-file`).
     pub fn set_loop_file(&self, on: bool) {
         self.set("loop-file", if on { "inf" } else { "no" });

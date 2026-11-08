@@ -93,10 +93,13 @@ actions! {
     NextItem => "Playback", "Next episode / item", false;
     PrevItem => "Playback", "Previous episode / item", false;
     Replay => "Playback", "Replay from the start", false;
+    FrameStep => "Playback", "Next frame (pauses)", true;
+    FrameBackStep => "Playback", "Previous frame (pauses)", true;
     CycleRepeat => "Playback", "Repeat: off / this / all", false;
     Episodes => "Playback", "Episodes and queue", false;
     AddToPlaylist => "Library", "Add to playlist", false;
     ToggleView => "Library", "Grid / list view", false;
+    FixMatch => "Library", "Fix match (pick the right show or movie)", false;
 
     VolumeUp => "Audio", "Volume up", true;
     VolumeDown => "Audio", "Volume down", true;
