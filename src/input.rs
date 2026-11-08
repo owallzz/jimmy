@@ -164,7 +164,7 @@ impl PadInput {
         use PadInput::*;
         let ps = kind == PadKind::PlayStation;
         match self {
-            A => if ps { "✕" } else { "A" },
+            A => if ps { "×" } else { "A" },
             B => if ps { "○" } else { "B" },
             X => if ps { "□" } else { "X" },
             Y => if ps { "△" } else { "Y" },
@@ -173,7 +173,7 @@ impl PadInput {
             Lt => if ps { "L2" } else { "LT" },
             Rt => if ps { "R2" } else { "RT" },
             Start => "≡",
-            Select => "⧉",
+            Select => "▣",
             Guide => if ps { "PS" } else { "◉" },
             Ls => if ps { "L3" } else { "LS" },
             Rs => if ps { "R3" } else { "RS" },

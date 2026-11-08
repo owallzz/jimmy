@@ -224,6 +224,11 @@ impl App {
                 .filter(|d| d.is_dir())
                 .or_else(|| app.cfg.roots.first().cloned()),
         };
+        // For screenshots/testing without a controller: JIMMY_FAKE_PAD=xbox|ps
+        if let Ok(k) = std::env::var("JIMMY_FAKE_PAD") {
+            app.last_was_pad = true;
+            app.pad_kind = if k == "ps" { PadKind::PlayStation } else { PadKind::Xbox };
+        }
         if let Some(d) = start_dir {
             app.open_dir(d, None);
         } else {

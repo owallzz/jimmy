@@ -122,6 +122,7 @@ impl Action {
                 | Action::End
                 | Action::Accept
                 | Action::Back
+                | Action::Options
                 | Action::PrevTab
                 | Action::NextTab
                 | Action::Palette

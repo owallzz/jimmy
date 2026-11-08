@@ -233,7 +233,8 @@ impl App {
                     y += 20.0;
                     vx = left;
                 }
-                let rr = text_clip(&p, pos2(vx, y + 9.0), (right - vx).max(10.0), s.trim_start(), 15.0, *c);
+                let s = if vx == left { s.trim_start() } else { s.as_str() };
+                let rr = text_clip(&p, pos2(vx, y + 9.0), (right - vx).max(10.0), s, 15.0, *c);
                 vx = rr.right();
             }
             y += 24.0;

@@ -412,6 +412,7 @@ impl App {
             let list: &[(Action, &str)] = match self.settings_tab {
                 6 => &[(Action::Accept, "Rebind"), (Action::Options, "Clear"), (Action::Right, "Gamepad / Keyboard"), (Action::NextTab, "Section"), (Action::Back, "Close")],
                 1 => &[(Action::Accept, "Open / add"), (Action::Options, "Remove"), (Action::NextTab, "Section"), (Action::Back, "Close")],
+                5 => &[(Action::Down, "Move (previews)"), (Action::Accept, "Use"), (Action::NextTab, "Section"), (Action::Back, "Close")],
                 _ => &[(Action::Right, "Change"), (Action::Down, "Move"), (Action::NextTab, "Section"), (Action::Back, "Close")],
             };
             out.extend(self.hints(ui, pos2(rect.left() + 20.0, hy), Context::List, list, 13.0, 22.0, pal.dim, pal.raise));

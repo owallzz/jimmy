@@ -135,7 +135,7 @@ impl App {
                         MenuItem::Source(Source::Continue, l, c) => ("▶", l.clone(), *c),
                         MenuItem::Source(Source::Recent, l, c) => ("◷", l.clone(), *c),
                         MenuItem::Source(Source::Dir(_), l, c) => ("▤", l.clone(), *c),
-                        MenuItem::Settings => ("⚙", "Settings".into(), None),
+                        MenuItem::Settings => ("≡", "Settings".into(), None),
                         MenuItem::Quit => ("×", "Quit jimmy".into(), None),
                         MenuItem::Header(_) => unreachable!(),
                     };
@@ -188,14 +188,14 @@ impl App {
         let rows = self.palette_rows();
         let q = self.palette_query.trim();
         if q.is_empty() {
-            // Most useful first when nothing is typed.
-            let ctx_first = |r: &PaletteRow| match (&r.cmd, self.palette_from) {
-                (Cmd::Act(a), Screen::Player) => !matches!(a.category(), "Playback" | "Audio" | "Subtitles" | "Display"),
-                (Cmd::Act(_), Screen::Browser) => false,
-                _ => true,
+            // Most useful first when nothing is typed, depending on where the palette was opened.
+            let order: &[&str] = match self.palette_from {
+                Screen::Browser => &["Go to", "App", "Color scheme", "Playback", "Subtitles", "Audio", "Display", "Navigate"],
+                Screen::Player => &["Playback", "Subtitles", "Audio", "Display", "App", "Go to", "Color scheme", "Navigate"],
             };
+            let rank = |r: &PaletteRow| order.iter().position(|c| *c == r.cat).unwrap_or(order.len());
             let mut rows = rows;
-            rows.sort_by_key(|r| ctx_first(r));
+            rows.sort_by_key(|r| rank(r));
             return rows;
         }
         let mut m = nucleo_matcher::Matcher::new(nucleo_matcher::Config::DEFAULT);

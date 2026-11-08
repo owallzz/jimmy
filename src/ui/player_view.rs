@@ -151,7 +151,7 @@ impl App {
 
         let iy = rect.bottom() - 16.0;
         let mut x = rect.left() + 24.0;
-        let st = if s.paused { "❚❚ PAUSED" } else { "▶ PLAYING" };
+        let st = if s.paused { "|| PAUSED" } else { "▶ PLAYING" };
         x = text(&p, pos2(x, iy), Align2::LEFT_CENTER, st, 13.0, with_alpha(self.pal.accent, 0.75)).right() + 18.0;
         let mut item = |k: &str, v: String| {
             let kr = text(&p, pos2(x, iy), Align2::LEFT_CENTER, k, 13.0, white(0.4));
