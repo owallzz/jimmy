@@ -57,9 +57,10 @@ build_mpv() {
     [ -d "mpv-${MPV#v}" ] || curl -fsSL "https://github.com/mpv-player/mpv/archive/refs/tags/$MPV.tar.gz" | tar xz
     cd "mpv-${MPV#v}"
     rm -rf build
-    # Everything optional off, then only what jimmy needs.
+    # Everything optional off (lua is a choice option, so it needs its own switch),
+    # then only what jimmy needs.
     meson setup build --prefix="$PREFIX" --libdir=lib --buildtype=release -Ddefault_library=static \
-        -Dlibmpv=true -Dcplayer=false --auto-features=disabled \
+        -Dlibmpv=true -Dcplayer=false --auto-features=disabled -Dlua=disabled \
         -Dgl=enabled -Degl=enabled -Dplain-gl=enabled \
         -Dvaapi=enabled -Dvaapi-drm=enabled -Ddrm=enabled \
         -Dpipewire=enabled -Dalsa=enabled -Dzlib=enabled -Diconv=enabled
