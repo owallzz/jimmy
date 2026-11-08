@@ -124,7 +124,7 @@ impl App {
             meta.push(ext.to_string_lossy().to_uppercase());
         }
         if !s.video_codec.is_empty() {
-            let codec = s.video_codec.split_whitespace().next().unwrap_or("").to_uppercase();
+            let codec = codec_label(&s.video_codec);
             meta.push(if s.height > 0 { format!("{codec} {}p", s.height) } else { codec });
         }
         meta.push(if s.hwdec.is_empty() || s.hwdec == "no" { "sw decode".into() } else { format!("hw {}", s.hwdec) });
@@ -294,4 +294,15 @@ impl App {
         }
         out
     }
+}
+
+/// Short codec name from mpv's decoder description ("Alliance for Open Media AV1" → "AV1").
+fn codec_label(desc: &str) -> String {
+    let l = desc.to_ascii_lowercase();
+    let known = [("av1", "AV1"), ("hevc", "HEVC"), ("h.265", "HEVC"), ("h.264", "H.264"), ("h264", "H.264"), ("vp9", "VP9"), ("vp8", "VP8"), ("mpeg-2", "MPEG-2"), ("mpeg-4", "MPEG-4"), ("vc-1", "VC-1"), ("theora", "Theora"), ("prores", "ProRes")];
+    known
+        .iter()
+        .find(|(k, _)| l.contains(k))
+        .map(|(_, v)| v.to_string())
+        .unwrap_or_else(|| desc.split_whitespace().next().unwrap_or("").to_uppercase())
 }
