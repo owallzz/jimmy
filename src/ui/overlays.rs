@@ -13,6 +13,7 @@ use std::path::PathBuf;
 pub(crate) enum MenuItem {
     Header(&'static str),
     Source(Source, String, Option<usize>),
+    Browse,
     Settings,
     Quit,
 }
@@ -48,6 +49,7 @@ impl App {
             let name = r.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| r.display().to_string());
             v.push(MenuItem::Source(Source::Dir(r.clone()), name, None));
         }
+        v.push(MenuItem::Browse);
         v.push(MenuItem::Header(""));
         v.push(MenuItem::Settings);
         v.push(MenuItem::Quit);
@@ -86,6 +88,7 @@ impl App {
                 self.overlay = Overlay::None;
                 match items[i].clone() {
                     MenuItem::Source(s, ..) => self.open_source(s),
+                    MenuItem::Browse => self.browse_computer(),
                     MenuItem::Settings => self.dispatch(ctx, Action::Settings),
                     MenuItem::Quit => self.dispatch(ctx, Action::Quit),
                     MenuItem::Header(_) => {}
@@ -138,6 +141,7 @@ impl App {
                         MenuItem::Source(Source::Continue, l, c) => ("▶", l.clone(), *c),
                         MenuItem::Source(Source::Recent, l, c) => ("◷", l.clone(), *c),
                         MenuItem::Source(Source::Dir(_), l, c) => ("▤", l.clone(), *c),
+                        MenuItem::Browse => ("+", "Browse computer…".into(), None),
                         MenuItem::Settings => ("≡", "Settings".into(), None),
                         MenuItem::Quit => ("×", "Quit jimmy".into(), None),
                         MenuItem::Header(_) => unreachable!(),

@@ -104,6 +104,8 @@ pub struct App {
     pub(crate) filter: String,
     /// Typing goes into the filter (entered with `/`).
     pub(crate) filtering: bool,
+    /// Browsing the whole computer (from "Browse computer…"): Back always goes up a folder.
+    pub(crate) exploring: bool,
     /// On-screen keyboard for controllers.
     pub(crate) osk: Option<osk::Osk>,
     fake_pad: Vec<PadEvent>,
@@ -207,6 +209,7 @@ impl App {
             list_error: None,
             filter: String::new(),
             filtering: false,
+            exploring: false,
             osk: None,
             fake_pad: vec![],
             pending_g: None,
@@ -268,25 +271,20 @@ impl App {
         };
 
         // Where to start: a folder/file from the command line, the last folder, or the first root.
+        // Start on "My media", unless a file or folder was passed on the command line.
         let start_dir = match &startup.open {
             Some(p) if p.is_dir() => Some(p.clone()),
             Some(p) => p.parent().map(Path::to_path_buf),
-            None => app
-                .hist
-                .last_dir
-                .clone()
-                .filter(|d| d.is_dir())
-                .or_else(|| app.cfg.roots.first().cloned()),
+            None => None,
         };
         // For screenshots/testing without a controller: JIMMY_FAKE_PAD=xbox|ps
         if let Ok(k) = std::env::var("JIMMY_FAKE_PAD") {
             app.last_was_pad = true;
             app.pad_kind = if k == "ps" { PadKind::PlayStation } else { PadKind::Xbox };
         }
-        if let Some(d) = start_dir {
-            app.open_dir(d, None);
-        } else {
-            app.open_source(Source::Continue);
+        match start_dir {
+            Some(d) => app.open_dir(d, None),
+            None => app.open_source(Source::All),
         }
         if let Some(p) = startup.open.filter(|p| p.is_file()) {
             app.want_focus = Some(p.clone());
@@ -327,6 +325,7 @@ impl App {
     }
 
     pub(crate) fn open_source(&mut self, src: Source) {
+        self.exploring = false;
         match src {
             Source::Dir(d) => self.open_dir(d, None),
             Source::All => {
@@ -351,6 +350,27 @@ impl App {
                 self.rebuild_virtual();
             }
         }
+    }
+
+    /// "Browse computer…": the file explorer, starting at the home folder.
+    pub(crate) fn browse_computer(&mut self) {
+        let home = directories::UserDirs::new().map(|u| u.home_dir().to_path_buf()).unwrap_or_else(|| PathBuf::from("/"));
+        self.open_dir(home, None);
+        self.exploring = true;
+    }
+
+    /// Add a folder to the library, or remove it if it's already there.
+    pub(crate) fn toggle_library(&mut self, dir: &Path) {
+        if let Some(i) = self.cfg.roots.iter().position(|r| r == dir) {
+            self.cfg.roots.remove(i);
+            self.toast(format!("Removed {} from your library", dir.display()));
+        } else {
+            self.cfg.roots.push(dir.to_path_buf());
+            self.toast(format!("Added {} to your library", dir.display()));
+        }
+        self.cfg.save();
+        // My media needs a fresh scan with the new set of folders.
+        self.all_cache = None;
     }
 
     fn item(&self, entry: Entry) -> Item {
@@ -509,18 +529,22 @@ impl App {
             self.apply_filter();
             return;
         }
+        // "My media" is home: backing out of it opens the menu instead of leaving.
         match &self.source {
-            Source::Dir(d) => {
-                if let Some(parent) = d.parent() {
+            Source::All => {
+                self.overlay = Overlay::Menu;
+                self.menu_focus = self.menu_current();
+            }
+            // Backing out of a library folder's top level goes home rather than above the library.
+            Source::Dir(d) if self.cfg.roots.contains(d) && !self.exploring => self.open_source(Source::All),
+            Source::Dir(d) => match d.parent() {
+                Some(parent) => {
                     let child = d.clone();
                     self.open_dir(parent.to_path_buf(), Some(child));
                 }
-            }
-            _ => {
-                if let Some(d) = self.hist.last_dir.clone().or_else(|| self.cfg.roots.first().cloned()) {
-                    self.open_dir(d, None);
-                }
-            }
+                None => self.open_source(Source::All),
+            },
+            Source::Continue | Source::Recent => self.open_source(Source::All),
         }
     }
 
@@ -952,7 +976,11 @@ impl App {
             Home => self.focus = 0,
             End => self.focus = n.saturating_sub(1),
             Accept => self.activate(false),
-            Options => self.activate(true),
+            // On a folder, X adds it to the library (or removes it); on a file it plays from the start.
+            Options => match self.items.get(self.focus).cloned() {
+                Some(i) if i.entry.is_dir => self.toggle_library(&i.entry.path),
+                _ => self.activate(true),
+            },
             Right => {
                 if self.items.get(self.focus).is_some_and(|i| i.entry.is_dir) {
                     self.activate(false);
@@ -1061,7 +1089,7 @@ impl App {
             let r = draw::chip(p, egui::pos2(x, pos.y), &cap, size * 0.85, color.unwrap_or(fg), cap_bg);
             let t = draw::text(p, egui::pos2(r.right() + size * 0.45, pos.y), egui::Align2::LEFT_CENTER, label, size, fg);
             let hit = r.union(t);
-            if ui.interact(hit, ui.scope_id().with(("hint", *a, label)), egui::Sense::CLICK).clicked() {
+            if ui.interact(hit, ui.scope_id().with(("hint", ctx_, *a, label, pos.y as i32)), egui::Sense::CLICK).clicked() {
                 clicked.push(*a);
             }
             x = t.right() + gap;

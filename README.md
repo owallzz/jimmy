@@ -63,7 +63,7 @@ System volume works through `osascript`; there is no backlight control on macOS.
 |---|---|---|---|
 | Move | ↑ ↓ | j k, `5j`, gg / G, Ctrl+D / Ctrl+U | D-pad, left stick |
 | Open / up a folder | Enter, → / Backspace, ← | l / h | A (✕) / B (○) |
-| Play from start | Shift+Enter | o | X (□) |
+| Play from start / add folder to library | Shift+Enter | o | X (□) |
 | Search (filter the list) | / | / | Y (△): on-screen keyboard |
 | Command palette | Ctrl+P | : | Guide (Xbox / PS button); Y (△) inside it types |
 | Menu (My media, folders, settings) | Tab | | ≡ |
@@ -76,6 +76,11 @@ System volume works through `osascript`; there is no backlight control on macOS.
 | Tracks panel | T | | ≡ |
 | Stop | Backspace | q | B (○) twice |
 | Fullscreen | F11, F (player) | | View |
+
+jimmy opens on **My media** (everything in your library folders). Backing out of My media opens the
+menu instead of leaving it. To add folders, open the menu → **Browse computer…**, move to a folder and
+press X (□) (Shift+Enter on a keyboard); press it again to remove it. Library folders are tagged
+`LIBRARY`.
 
 In the browser, press `/` to filter: type, Enter keeps the filter, Esc clears it. With a controller,
 Y (△) opens an on-screen keyboard: D-pad/stick moves, A (✕) types, X (□) deletes, Y (△) adds a space,

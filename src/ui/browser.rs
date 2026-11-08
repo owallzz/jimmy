@@ -158,7 +158,9 @@ impl App {
             }
 
             if item.entry.is_dir {
-                // folders: nothing else (no extra disk reads)
+                if show_prog && self.cfg.roots.contains(&item.entry.path) {
+                    text(&p_rows, pos2(c_prog, y), Align2::LEFT_CENTER, "LIBRARY", 11.0, if focused { pal.ink } else { pal.ok });
+                }
             } else {
                 if show_prog {
                     if watched {
@@ -214,10 +216,16 @@ impl App {
         // ---- hint bar (under the list only)
         if self.cfg.show_hints {
             let hint_y = rect.bottom() - HINT_H / 2.0;
+            let on_dir = self.items.get(self.focus).map(|i| (i.entry.is_dir, self.cfg.roots.contains(&i.entry.path)));
+            let (open, opt) = match on_dir {
+                Some((true, true)) => ("Open", "Remove from library"),
+                Some((true, false)) => ("Open", "Add to library"),
+                _ => ("Play", "From start"),
+            };
             let list: &[(Action, &str)] = &[
-                (Action::Accept, "Play"),
+                (Action::Accept, open),
                 (Action::Back, "Back"),
-                (Action::Options, "From start"),
+                (Action::Options, opt),
                 (Action::Filter, "Search"),
                 (Action::Palette, "Commands"),
                 (Action::Menu, "Menu"),
@@ -279,6 +287,9 @@ impl App {
 
         if item.entry.is_dir {
             kv("Path", &[(item.entry.path.display().to_string(), pal.dim)]);
+            if self.cfg.roots.contains(&item.entry.path) {
+                kv("Library", &[("yes, part of My media".into(), pal.ok)]);
+            }
         } else {
             let h = item.hist.clone().unwrap_or_default();
             let duration = item.duration();
@@ -340,7 +351,11 @@ impl App {
         // ---- action buttons at the bottom of the panel
         let resumable = item.hist.as_ref().is_some_and(|h| h.resumable());
         let buttons: Vec<(String, Action, bool)> = if item.entry.is_dir {
-            vec![("Open folder".into(), Action::Accept, true)]
+            let in_lib = self.cfg.roots.contains(&item.entry.path);
+            vec![
+                ("Open folder".into(), Action::Accept, true),
+                (if in_lib { "− Remove from library" } else { "+ Add to library" }.into(), Action::Options, false),
+            ]
         } else if resumable {
             let pos = fmt_time(item.hist.as_ref().map(|h| h.pos).unwrap_or(0.0));
             vec![(format!("▶ Resume from {pos}"), Action::Accept, true), ("↺ Play from start".into(), Action::Options, false)]
