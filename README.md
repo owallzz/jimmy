@@ -26,7 +26,7 @@ sudo dnf swap mesa-va-drivers mesa-va-drivers-freeworld
 ### Install the RPM
 
 ```bash
-sudo dnf install ./jimmy-0.1.0-1.fc44.x86_64.rpm
+sudo dnf install ./jimmy-0.1.0-*.fc44.x86_64.rpm
 ```
 
 This puts `jimmy` in `/usr/bin` and adds it to the app menu. To build the RPM yourself, see

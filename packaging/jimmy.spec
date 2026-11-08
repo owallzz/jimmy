@@ -3,7 +3,7 @@
 
 Name:           jimmy
 Version:        %{jimmy_version}
-Release:        1%{?dist}
+Release:        %{jimmy_release}%{?dist}
 Summary:        Lightweight, gamepad-friendly media player
 License:        LicenseRef-Proprietary
 URL:            https://github.com/owallzz/jimmy
@@ -37,5 +37,5 @@ install -Dm644 %{jimmy_src}/README.md %{buildroot}%{_docdir}/jimmy/README.md
 %doc %{_docdir}/jimmy/README.md
 
 %changelog
-* Sat Nov 07 2026 jimmy developers - %{jimmy_version}-1
+* Sat Nov 07 2026 jimmy developers - %{jimmy_version}-%{jimmy_release}
 - Release build

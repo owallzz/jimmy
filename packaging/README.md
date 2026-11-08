@@ -9,6 +9,7 @@
 | `/usr/share/icons/hicolor/scalable/apps/jimmy.svg` | icon |
 | `/usr/share/doc/jimmy/README.md` | docs |
 
+The release number is the git commit count, so each new build upgrades the installed one.
 The RPM depends on `mpv-libs` (plus `libmpv.so.2` and `libudev.so.1`, detected automatically).
 
 ## On Fedora
@@ -31,7 +32,7 @@ limactl shell jimmy-fedora -- bash -lc '
   podman run --rm --platform linux/amd64 \
     -v "$PWD":/src:ro -v "$HOME/dist-x86":/out -v "$HOME/x86-target":/target -e CARGO_TARGET_DIR=/target \
     jimmy-build:fc44-x86_64 /src/packaging/build-rpm.sh /out'
-limactl copy jimmy-fedora:dist-x86/jimmy-0.1.0-1.fc44.x86_64.rpm dist/
+limactl copy 'jimmy-fedora:dist-x86/jimmy-*.x86_64.rpm' dist/
 ```
 
 Change `ARG FEDORA=44` (or pass `--build-arg FEDORA=43`) to target an older Fedora.
