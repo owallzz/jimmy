@@ -39,3 +39,15 @@ Change `ARG FEDORA=44` (or pass `--build-arg FEDORA=43`) to target an older Fedo
 
 Installing the RPM does not touch per-user installs from `jimmy --install`; if you used that before,
 run `jimmy --uninstall` once so the menu doesn't show two entries.
+
+## Slim, CPU-tuned build (what's installed on the iMac)
+
+```bash
+packaging/build-slim-mpv.sh          # once: static FFmpeg + libplacebo + libmpv in ~/.cache/jimmy-mpv
+packaging/build-native-rpm.sh        # jimmy + that mpv, -C target-cpu=native, full LTO
+sudo dnf install ./dist/jimmy-*.rpm
+```
+
+Links 31 shared libraries instead of ~300 (Fedora's libmpv/FFmpeg pull in Samba, Tesseract,
+Python, video encoders…). On the iMac, playing 1080p H.264: 99 MB private / 139 MB RSS, versus
+116 / 184 MB with Fedora's libmpv. The package no longer requires `mpv-libs`.

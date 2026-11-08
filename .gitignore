@@ -4,3 +4,4 @@
 /test-media
 .vite/
 /dist
+/target-native
