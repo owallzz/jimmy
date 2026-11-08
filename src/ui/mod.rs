@@ -187,6 +187,7 @@ pub struct App {
 
     steps: Vec<Step>,
     step_at: Instant,
+    startup_play: Option<PathBuf>,
     injected: Vec<egui::Event>,
     fullscreen: bool,
 }
@@ -278,6 +279,7 @@ impl App {
             listening: None,
             steps: startup.steps,
             step_at: Instant::now(),
+            startup_play: None,
             injected: vec![],
             fullscreen: startup.fullscreen,
             binds: Bindings::load(),
@@ -303,9 +305,11 @@ impl App {
             Some(d) => app.open_dir(d, None),
             None => app.open_source(Source::All),
         }
+        // Played on the first frame, once mpv's video renderer exists (loading earlier can
+        // leave mpv without video output).
         if let Some(p) = startup.open.filter(|p| p.is_file()) {
             app.want_focus = Some(p.clone());
-            app.play(&p, false);
+            app.startup_play = Some(p);
         }
         app
     }
@@ -1345,6 +1349,9 @@ impl eframe::App for App {
                     log::error!("{e}");
                     self.player_error = Some(e.to_string());
                 }
+            }
+            if let Some(p) = self.startup_play.take() {
+                self.play(&p, false);
             }
             if self.fullscreen {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
