@@ -1,0 +1,133 @@
+# Linux x86_64 builds of jimmy in three variants. Pushing a tag vX.Y.Z (matching Cargo.toml's
+# version) publishes a GitHub release; running it by hand only uploads workflow artifacts.
+#   dynamic      system libmpv/FFmpeg (RPM requires mpv-libs)
+#   static       slim static mpv + FFmpeg with every decoder and demuxer
+#   static-slim  slim static mpv + FFmpeg with only common codecs and containers
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FEDORA: "44"
+  # x86-64-v2 = SSE4.2/POPCNT: any x86_64 CPU since 2009 (Nehalem / Bulldozer).
+  RUSTFLAGS: "-C target-cpu=x86-64-v2"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    container: fedora:44
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: dynamic
+            profile: ""
+          - variant: static
+            profile: full
+          - variant: static-slim
+            profile: slim
+    steps:
+      - name: Install build dependencies
+        run: |
+          pkgs="git cargo rust gcc gcc-c++ systemd-devel rpm-build tar gzip"
+          if [ -z "${{ matrix.profile }}" ]; then
+            pkgs="$pkgs mpv-devel"
+          else
+            pkgs="$pkgs meson ninja-build nasm python3-jinja2 curl xz libass-devel libva-devel
+                  libdrm-devel libdisplay-info-devel pipewire-devel alsa-lib-devel mesa-libEGL-devel
+                  zlib-ng-compat-devel"
+          fi
+          dnf -y --setopt=install_weak_deps=False install $pkgs
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # release number = commit count
+
+      - name: Check tag matches Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          v="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != Cargo.toml v$v"; exit 1; }
+
+      - name: Cache static mpv
+        if: matrix.profile != ''
+        id: mpv-cache
+        uses: actions/cache@v4
+        with:
+          path: /opt/jimmy-mpv
+          key: mpv-fc${{ env.FEDORA }}-${{ matrix.profile }}-${{ hashFiles('packaging/build-slim-mpv.sh') }}
+
+      - name: Build static mpv (${{ matrix.profile }})
+        if: matrix.profile != '' && steps.mpv-cache.outputs.cache-hit != 'true'
+        run: |
+          git config --global --add safe.directory '*'
+          PROFILE=${{ matrix.profile }} packaging/build-slim-mpv.sh /opt/jimmy-mpv
+          rm -rf /opt/jimmy-mpv/src
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-fc${{ env.FEDORA }}-${{ matrix.variant }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-fc${{ env.FEDORA }}-${{ matrix.variant }}-
+
+      - name: Build jimmy
+        run: |
+          git config --global --add safe.directory "$PWD"
+          if [ -n "${{ matrix.profile }}" ]; then export JIMMY_MPV_PREFIX=/opt/jimmy-mpv; fi
+          JIMMY_VARIANT=${{ matrix.variant }} packaging/build-rpm.sh dist
+          ls -l dist
+
+      - name: Smoke test
+        run: |
+          rpm -qp --requires dist/*.rpm | grep -v '^rpmlib'
+          ./target/release/jimmy --version
+          ldd target/release/jimmy | grep -E 'mpv|avcodec' || echo "(no shared mpv/FFmpeg)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jimmy-${{ matrix.variant }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'EOF'
+          Linux x86_64 builds (x86-64-v2 baseline, built on Fedora ${{ env.FEDORA }}). Pick one:
+
+          | Build | What it is |
+          |---|---|
+          | **static** | mpv + FFmpeg built in, every decoder and container. Recommended. |
+          | **static-slim** | Same, but only common codecs and containers (H.264, HEVC, AV1, VP9, MPEG-2/4, VC-1; AAC, AC-3, DTS, TrueHD, FLAC, Opus, MP3…; MKV, MP4, AVI, TS, WebM…). Smallest. |
+          | **dynamic** | Uses the system libmpv (`mpv-libs`). Install RPM Fusion's ffmpeg for H.264/HEVC. |
+
+          Fedora: `sudo dnf install ./jimmy-*.rpm`. Other distros: unpack the tarball and run `./jimmy --install`.
+          EOF
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" --title "jimmy ${GITHUB_REF_NAME}" --notes-file notes.md

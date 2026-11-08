@@ -5,6 +5,7 @@
 # The binary only runs on CPUs with the same features as the build machine.
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
+export JIMMY_VARIANT="${JIMMY_VARIANT:-native}"
 export JIMMY_MPV_PREFIX="${JIMMY_MPV_PREFIX:-$HOME/.cache/jimmy-mpv}"
 [ -f "$JIMMY_MPV_PREFIX/lib/libmpv.a" ] || { echo "no slim mpv in $JIMMY_MPV_PREFIX; run packaging/build-slim-mpv.sh first" >&2; exit 1; }
 export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native"

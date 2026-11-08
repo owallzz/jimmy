@@ -43,7 +43,7 @@ run `jimmy --uninstall` once so the menu doesn't show two entries.
 ## Slim, CPU-tuned build (what's installed on the iMac)
 
 ```bash
-packaging/build-slim-mpv.sh          # once: static FFmpeg + libplacebo + libmpv in ~/.cache/jimmy-mpv
+packaging/build-slim-mpv.sh          # once: static dav1d + FFmpeg + libplacebo + libmpv in ~/.cache/jimmy-mpv
 packaging/build-native-rpm.sh        # jimmy + that mpv, -C target-cpu=native, full LTO
 sudo dnf install ./dist/jimmy-*.rpm
 ```
@@ -51,3 +51,20 @@ sudo dnf install ./dist/jimmy-*.rpm
 Links 31 shared libraries instead of ~300 (Fedora's libmpv/FFmpeg pull in Samba, Tesseract,
 Python, video encoders…). On the iMac, playing 1080p H.264: 99 MB private / 139 MB RSS, versus
 116 / 184 MB with Fedora's libmpv. The package no longer requires `mpv-libs`.
+
+## Releases (GitHub Actions)
+
+`.github/workflows/release.yml` builds three x86_64 variants in a Fedora 44 container, all with
+`-C target-cpu=x86-64-v2` (SSE4.2/POPCNT; any x86_64 CPU since 2009):
+
+| Variant | mpv / FFmpeg | Built with |
+|---|---|---|
+| `dynamic` | system libmpv (RPM requires `mpv-libs`) | `packaging/build-rpm.sh` |
+| `static` | built in, every decoder/demuxer | `PROFILE=full build-slim-mpv.sh`, then `JIMMY_MPV_PREFIX=… build-rpm.sh` |
+| `static-slim` | built in, common codecs/containers only | `PROFILE=slim build-slim-mpv.sh`, then the same |
+
+Each produces `jimmy-<ver>-<count>.<variant>.fc44.x86_64.rpm` and
+`jimmy-<ver>-<variant>-linux-x86_64.tar.gz`. Running the workflow by hand uploads them as
+workflow artifacts; pushing a tag `v<version>` (must match `Cargo.toml`) publishes a GitHub release
+with all six files and `SHA256SUMS`. The static mpv builds are cached per profile and rebuild only
+when `build-slim-mpv.sh` changes.
