@@ -1,0 +1,69 @@
+# A fully optimised static build for the iMac, made on the self-hosted runner instead of the
+# iMac's slow i3: release, opt-level 3, fat LTO, one codegen unit, trimmed static
+# mpv/FFmpeg/libplacebo with dav1d (software AV1). Generic x86-64-v2 baseline (any x86_64 CPU
+# since 2009), the same static mpv the release workflow builds and caches.
+# Runs when the build/imac branch is pushed (or by hand); the RPM is a workflow artifact.
+name: imac build
+
+on:
+  push:
+    branches: ["build/imac"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: [self-hosted, linux, x64]
+    container: fedora:44
+    env:
+      RUSTFLAGS: "-C target-cpu=x86-64-v2"
+      CARGO_PROFILE_RELEASE_LTO: fat
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: "3"
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Install build dependencies
+        run: |
+          dnf -y --setopt=install_weak_deps=False install git cargo rust gcc gcc-c++ systemd-devel \
+            rpm-build tar gzip meson ninja-build nasm python3-jinja2 curl xz libass-devel libva-devel \
+            libdrm-devel libdisplay-info-devel pipewire-devel alsa-lib-devel mesa-libEGL-devel \
+            zlib-ng-compat-devel binutils
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # release number = commit count
+
+      # Same key as release.yml's static build, so its cached libraries are reused.
+      - name: Cache static mpv
+        id: mpv-cache
+        uses: actions/cache@v4
+        with:
+          path: /opt/jimmy-mpv
+          key: mpv-fc44-full-${{ hashFiles('packaging/build-slim-mpv.sh') }}
+
+      - name: Build static mpv
+        if: steps.mpv-cache.outputs.cache-hit != 'true'
+        run: |
+          git config --global --add safe.directory '*'
+          PROFILE=full packaging/build-slim-mpv.sh /opt/jimmy-mpv
+          rm -rf /opt/jimmy-mpv/src
+
+      - name: Build jimmy
+        run: |
+          git config --global --add safe.directory "$PWD"
+          JIMMY_MPV_PREFIX=/opt/jimmy-mpv JIMMY_VARIANT=static packaging/build-rpm.sh dist
+          ls -l dist
+
+      - name: Check it
+        run: |
+          ldd target/release/jimmy | grep -Ei 'mpv|avcodec|placebo' && exit 1 || echo "mpv/FFmpeg linked statically"
+          grep -q libdav1d target/release/jimmy && echo "dav1d (software AV1) included"
+          rpm -qp --requires dist/*.rpm | grep -i mpv && exit 1 || echo "no mpv-libs dependency"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jimmy-imac
+          path: dist/*.rpm
+          if-no-files-found: error
