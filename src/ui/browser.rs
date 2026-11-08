@@ -40,6 +40,8 @@ impl App {
             Source::Movies => (String::new(), "Movies".into()),
             Source::Shows => (String::new(), "TV shows".into()),
             Source::Show(key) => ("TV shows / ".into(), self.catalog.show(key).map(|s| s.name.clone()).unwrap_or_default()),
+            Source::Playlists => (String::new(), "Playlists".into()),
+            Source::Playlist(pl) => ("Playlists / ".into(), crate::playlist::name(pl)),
         };
         let max_path = (rect.width() * 0.35).max(120.0);
         if !parent.is_empty() {
@@ -270,6 +272,8 @@ impl App {
                 Source::Movies => "No movies found. Add folders in Settings → Library.".into(),
                 Source::Shows => "No TV shows found. Episodes need names like Show S01E02 or a Season 1 folder.".into(),
                 Source::Show(_) => "No episodes".into(),
+                Source::Playlists => "No playlists yet. Select a video and press Add to playlist.".into(),
+                Source::Playlist(_) => "This playlist is empty".into(),
             })
         } else {
             None
@@ -284,13 +288,20 @@ impl App {
             let focused = self.items.get(self.focus);
             let on_show = focused.is_some_and(|i| i.show.is_some());
             let on_dir = focused.map(|i| (i.entry.is_dir, self.cfg.roots.contains(&i.entry.path)));
+            let on_playlist = focused.is_some_and(|i| crate::playlist::is_playlist(&i.entry.path));
+            let in_own = matches!(&self.source, Source::Playlist(pl) if crate::playlist::is_own(pl));
             let (open, opt) = match on_dir {
                 _ if on_show => ("Episodes", "Play next"),
+                _ if on_playlist => ("Open", "Play all"),
+                _ if in_own => ("Play", "Remove"),
                 Some((true, true)) => ("Open", "Remove from library"),
                 Some((true, false)) => ("Open", "Add to library"),
                 _ => ("Play", "From start"),
             };
             let mut list: Vec<(Action, &str)> = vec![(Action::Accept, open), (Action::Back, "Back"), (Action::Options, opt)];
+            if focused.is_some_and(|i| !i.entry.is_dir || i.show.is_some()) {
+                list.push((Action::AddToPlaylist, "Playlist"));
+            }
             if seasons.len() > 1 {
                 list.push((Action::NextTab, "Season"));
             }

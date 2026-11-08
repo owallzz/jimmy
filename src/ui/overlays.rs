@@ -45,6 +45,7 @@ impl App {
             MenuItem::Source(Source::Movies, "Movies".into(), self.all_cache.as_ref().map(|_| self.catalog.movies.len())),
             MenuItem::Source(Source::Continue, "Continue watching".into(), Some(self.hist.recent(true).len())),
             MenuItem::Source(Source::Recent, "Recently played".into(), None),
+            MenuItem::Source(Source::Playlists, "Playlists".into(), None),
             MenuItem::Header("Folders"),
         ];
         for r in &self.cfg.roots {
@@ -133,7 +134,7 @@ impl App {
                     let row = Rect::from_min_size(pos2(r.left(), y), vec2(w, 38.0));
                     let si = sel.iter().position(|&s| s == i).unwrap_or(0);
                     let focused = si == self.menu_focus;
-                    let current = matches!(item, MenuItem::Source(s, ..) if *s == self.source || (*s == Source::Shows && matches!(self.source, Source::Show(_))) || matches!((s, &self.source), (Source::Dir(a), Source::Dir(b)) if b.starts_with(a)));
+                    let current = matches!(item, MenuItem::Source(s, ..) if *s == self.source || (*s == Source::Shows && matches!(self.source, Source::Show(_))) || (*s == Source::Playlists && matches!(self.source, Source::Playlist(_))) || matches!((s, &self.source), (Source::Dir(a), Source::Dir(b)) if b.starts_with(a)));
                     if focused {
                         p.rect_filled(row, 0.0, pal.accent);
                     }
@@ -144,6 +145,7 @@ impl App {
                         MenuItem::Source(Source::Recent, l, c) => ("◷", l.clone(), *c),
                         MenuItem::Source(Source::Shows | Source::Show(_), l, c) => ("▥", l.clone(), *c),
                         MenuItem::Source(Source::Movies, l, c) => ("▣", l.clone(), *c),
+                        MenuItem::Source(Source::Playlists | Source::Playlist(_), l, c) => ("≣", l.clone(), *c),
                         MenuItem::Source(Source::Dir(_), l, c) => ("▤", l.clone(), *c),
                         MenuItem::Browse => ("+", "Browse computer…".into(), None),
                         MenuItem::Settings => ("≡", "Settings".into(), None),

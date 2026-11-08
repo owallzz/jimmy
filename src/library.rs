@@ -82,7 +82,7 @@ pub fn list_dir(dir: &Path) -> Listing {
                 modified: meta.modified().ok(),
                 subs: vec![],
             });
-        } else if is_media(&path) {
+        } else if is_media(&path) || crate::playlist::is_playlist(&path) {
             media.push(Entry {
                 name,
                 path,

@@ -10,6 +10,7 @@ mod mem;
 mod mpv_render;
 mod meta;
 mod player;
+mod playlist;
 mod system;
 mod theme;
 mod ui;

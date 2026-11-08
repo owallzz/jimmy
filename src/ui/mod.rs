@@ -5,6 +5,7 @@ pub mod draw;
 mod osk;
 mod overlays;
 mod player_view;
+mod playlists;
 mod settings;
 
 use crate::action::{Action, Context};
@@ -34,6 +35,8 @@ pub enum Overlay {
     Palette,
     Tracks,
     Settings,
+    /// "Add to playlist" picker.
+    AddToPlaylist,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -49,6 +52,10 @@ pub enum Source {
     Shows,
     /// A show's episodes, one season at a time (key from `media::show_key`).
     Show(String),
+    /// jimmy's playlists plus any found in library folders.
+    Playlists,
+    /// One playlist's entries.
+    Playlist(PathBuf),
 }
 
 impl Source {
@@ -159,6 +166,9 @@ pub struct App {
     pub(crate) catalog: crate::media::Catalog,
     /// Season shown on a show's page.
     pub(crate) season: u32,
+    /// Files waiting for the "Add to playlist" picker, and its selection.
+    pub(crate) pl_files: Vec<PathBuf>,
+    pub(crate) pl_focus: usize,
     want_focus: Option<PathBuf>,
 
     pub(crate) screen: Screen,
@@ -276,6 +286,8 @@ impl App {
             all_cache: None,
             catalog: Default::default(),
             season: 1,
+            pl_files: vec![],
+            pl_focus: 0,
             want_focus: None,
             screen: Screen::Browser,
             overlay: Overlay::None,
@@ -403,11 +415,19 @@ impl App {
                 self.scanner.request_all(&self.cfg.roots);
                 let cached = self.all_cache.clone();
                 if let Some(entries) = cached {
-                    let items = entries.into_iter().map(|e| self.item(e)).collect();
+                    let items = entries.into_iter().filter(|e| !crate::playlist::is_playlist(&e.path)).map(|e| self.item(e)).collect();
                     self.set_items(items);
                 } else {
                     self.set_items(vec![]);
                 }
+            }
+            Source::Playlists | Source::Playlist(_) => {
+                self.remember_focus();
+                self.source = src;
+                self.filter.clear();
+                self.list_error = None;
+                self.loading = false;
+                self.rebuild_playlist_view();
             }
             cat if cat.from_catalog() => {
                 self.remember_focus();
@@ -433,6 +453,84 @@ impl App {
                 self.filter.clear();
                 self.rebuild_virtual();
             }
+        }
+    }
+
+    /// Every playlist: jimmy's own first, then any found in library folders.
+    pub(crate) fn all_playlists(&self) -> Vec<PathBuf> {
+        let mut v = crate::playlist::list_own();
+        if let Some(c) = &self.all_cache {
+            v.extend(c.iter().filter(|e| crate::playlist::is_playlist(&e.path)).map(|e| e.path.clone()));
+        }
+        v
+    }
+
+    pub(crate) fn rebuild_playlist_view(&mut self) {
+        let entry_for = |path: PathBuf| {
+            let meta = std::fs::metadata(&path).ok();
+            Entry {
+                name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                is_dir: false,
+                size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
+                modified: meta.and_then(|m| m.modified().ok()),
+                subs: vec![],
+                path,
+            }
+        };
+        let items: Vec<Item> = match self.source.clone() {
+            Source::Playlists => self.all_playlists().into_iter().map(|p| self.item(entry_for(p))).collect(),
+            Source::Playlist(p) => crate::playlist::read(&p).into_iter().map(|f| self.item(entry_for(f))).collect(),
+            _ => return,
+        };
+        self.set_items(items);
+    }
+
+    /// Add to playlist (P / RS): a file, every episode of a show row, or a playlist's entries.
+    pub(crate) fn open_add_to_playlist(&mut self, files: Vec<PathBuf>) {
+        if files.is_empty() {
+            self.toast("Nothing to add here");
+            return;
+        }
+        self.pl_files = files;
+        self.pl_focus = 0;
+        self.overlay = Overlay::AddToPlaylist;
+    }
+
+    /// What Add to playlist adds for the selected row.
+    fn files_for_playlist(&self) -> Vec<PathBuf> {
+        let Some(item) = self.items.get(self.focus) else { return vec![] };
+        if let Some(key) = &item.show {
+            return self.catalog.show(key).map(|s| s.episodes.iter().map(|(_, f)| f.path.clone()).collect()).unwrap_or_default();
+        }
+        if crate::playlist::is_playlist(&item.entry.path) {
+            return crate::playlist::read(&item.entry.path);
+        }
+        if item.entry.is_dir {
+            return vec![];
+        }
+        vec![item.entry.path.clone()]
+    }
+
+    pub(crate) fn add_to_playlist(&mut self, target: Option<PathBuf>) {
+        let files = std::mem::take(&mut self.pl_files);
+        self.overlay = Overlay::None;
+        let target = target.unwrap_or_else(|| {
+            // Name a new playlist after the show, or the folder the first file is in.
+            let base = files
+                .first()
+                .and_then(|f| crate::media::episode(f).map(|e| e.show).or_else(|| f.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned())))
+                .unwrap_or_else(|| "Playlist".into());
+            crate::playlist::new_path(&base)
+        });
+        match crate::playlist::add(&target, &files) {
+            Ok(n) => {
+                let what = if n == 1 { "1 video".to_string() } else { format!("{n} videos") };
+                self.toast(format!("Added {what} to {}", crate::playlist::name(&target)));
+            }
+            Err(e) => self.toast(format!("Couldn't save playlist: {e}")),
+        }
+        if matches!(self.source, Source::Playlists | Source::Playlist(_)) {
+            self.rebuild_playlist_view();
         }
     }
 
@@ -687,6 +785,19 @@ impl App {
         // Back never switches tabs (only the menu does): inside a folder it goes up one level, and
         // at a tab's top level (My media, Continue watching, Recent, a library's root, or the
         // filesystem root when browsing) it opens the menu.
+        if let Source::Playlist(pl) = self.source.clone() {
+            let from_folder = !crate::playlist::is_own(&pl) && matches!(self.remembered.last(), Some((d, _)) if pl.parent() == Some(d.as_path()));
+            match pl.parent().filter(|_| from_folder) {
+                Some(dir) => self.open_dir(dir.to_path_buf(), Some(pl.clone())),
+                None => {
+                    self.open_source(Source::Playlists);
+                    if let Some(i) = self.items.iter().position(|i| i.entry.path == pl) {
+                        self.focus = i;
+                    }
+                }
+            }
+            return;
+        }
         // A show's page is inside the TV shows tab, so Back goes up to the list of shows.
         if let Source::Show(key) = &self.source {
             let focus = show_path(key);
@@ -713,6 +824,19 @@ impl App {
         let Some(item) = self.items.get(self.focus).cloned() else { return };
         if let Some(key) = item.show {
             self.open_source(Source::Show(key));
+        } else if crate::playlist::is_playlist(&item.entry.path) {
+            if from_start {
+                // Options on a playlist: play it all from the top.
+                let list = crate::playlist::read(&item.entry.path);
+                self.play_queue(list, 0, crate::playlist::name(&item.entry.path), true);
+            } else {
+                self.open_source(Source::Playlist(item.entry.path));
+            }
+        } else if let Source::Playlist(pl) = self.source.clone() {
+            // Inside a playlist, the rest of it plays next.
+            let list: Vec<PathBuf> = self.all_items.iter().map(|i| i.entry.path.clone()).collect();
+            let idx = list.iter().position(|p| *p == item.entry.path).unwrap_or(0);
+            self.play_queue(list, idx, crate::playlist::name(&pl), from_start);
         } else if item.entry.is_dir {
             self.open_dir(item.entry.path, None);
         } else {
@@ -1305,6 +1429,7 @@ impl App {
             Overlay::Palette => return self.palette_action(ctx, a),
             Overlay::Tracks => return self.tracks_action(a),
             Overlay::Settings => return self.settings_action(ctx, a),
+            Overlay::AddToPlaylist => return self.add_playlist_action(a),
             Overlay::None => {}
         }
 
@@ -1327,8 +1452,21 @@ impl App {
             End => self.focus = n.saturating_sub(1),
             Accept => self.activate(false),
             // On a folder, X adds it to the library (or removes it); on a file it plays from the start.
+            AddToPlaylist => {
+                let files = self.files_for_playlist();
+                self.open_add_to_playlist(files);
+            }
             Options => match self.items.get(self.focus).cloned() {
                 Some(Item { show: Some(key), .. }) => self.play_next_up(&key),
+                Some(i) if matches!(&self.source, Source::Playlist(pl) if crate::playlist::is_own(pl)) => {
+                    if let Source::Playlist(pl) = self.source.clone() {
+                        match crate::playlist::remove(&pl, &i.entry.path) {
+                            Ok(()) => self.toast(format!("Removed from {}", crate::playlist::name(&pl))),
+                            Err(e) => self.toast(format!("Couldn't save playlist: {e}")),
+                        }
+                        self.rebuild_playlist_view();
+                    }
+                }
                 Some(i) if i.entry.is_dir => self.toggle_library(&i.entry.path),
                 _ => self.activate(true),
             },
@@ -1509,6 +1647,9 @@ impl App {
         }
         if item.entry.is_dir {
             return format!("{}/", item.entry.name);
+        }
+        if crate::playlist::is_playlist(&item.entry.path) && self.source == Source::Playlists {
+            return crate::playlist::name(&item.entry.path);
         }
         match (&self.source, &item.ep) {
             // A show's page: "3  Title" (the show and season are already on screen).
@@ -1754,7 +1895,7 @@ impl eframe::App for App {
             if wanted {
                 self.loading = false;
                 self.list_error = l.error.clone();
-                let items = l.entries.into_iter().map(|e| self.item(e)).collect();
+                let items = l.entries.into_iter().filter(|e| !(l.all && crate::playlist::is_playlist(&e.path))).map(|e| self.item(e)).collect();
                 self.set_items(items);
             }
         }
@@ -1796,6 +1937,7 @@ impl eframe::App for App {
             Overlay::Palette => clicked.extend(self.draw_palette(ui, rect)),
             Overlay::Tracks => clicked.extend(self.draw_tracks(ui, rect)),
             Overlay::Settings => clicked.extend(self.draw_settings(ui, rect)),
+            Overlay::AddToPlaylist => clicked.extend(self.draw_add_playlist(ui, rect)),
         }
         self.osk_sync();
         if let Some(o) = self.osk {

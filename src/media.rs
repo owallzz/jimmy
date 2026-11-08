@@ -237,7 +237,7 @@ impl Catalog {
         let mut shows: HashMap<String, Show> = HashMap::new();
         let mut movies = Vec::new();
         for e in entries {
-            if crate::library::is_audio(&e.path) {
+            if crate::library::is_audio(&e.path) || crate::playlist::is_playlist(&e.path) {
                 continue;
             }
             match episode(&e.path) {
