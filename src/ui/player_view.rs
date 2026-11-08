@@ -15,6 +15,10 @@ impl App {
         if let Some(player) = &self.player {
             player.paint(&p, rect);
         }
+        // Benchmark switch: video only, no UI work at all (measures the UI's own cost).
+        if std::env::var_os("JIMMY_BENCH_NOUI").is_some() {
+            return out;
+        }
 
         // Mouse: moving shows the controls; click pauses; double-click toggles fullscreen.
         let resp = ui.interact(rect, ui.scope_id().with("video"), Sense::CLICK);

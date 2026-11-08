@@ -203,7 +203,8 @@ impl App {
         draw::set_clock_24h(cfg.clock_24h);
         setup_fonts(&ctx);
 
-        let player = match Player::new(ctx.clone(), &cfg) {
+        let no_mpv = std::env::var_os("JIMMY_BENCH_NOMPV").is_some(); // benchmark switch
+        let player = match if no_mpv { Err(anyhow::anyhow!("disabled")) } else { Player::new(ctx.clone(), &cfg) } {
             Ok(p) => Some(p),
             Err(e) => {
                 log::error!("{e}");

@@ -130,18 +130,23 @@ impl Prober {
         let (res_tx, res_rx) = channel::<ProbeResult>();
         let _ = std::thread::Builder::new().name("probe".into()).spawn(move || {
             crate::library::lower_io_priority();
-            let mpv = match probe_mpv() {
-                Ok(m) => m,
-                Err(e) => return log::warn!("metadata probing unavailable: {e}"),
-            };
+            // The hidden mpv is created on first use, so idle jimmy doesn't pay for it.
+            let mut mpv: Option<Mpv> = None;
             while let Ok(mut path) = req_rx.recv() {
+                if mpv.is_none() {
+                    match probe_mpv() {
+                        Ok(m) => mpv = Some(m),
+                        Err(e) => return log::warn!("metadata probing unavailable: {e}"),
+                    }
+                }
+                let Some(mpv) = mpv.as_ref() else { break };
                 // Only the newest request matters (the user moved on).
                 while let Ok(newer) = req_rx.try_recv() {
                     path = newer;
                 }
                 log::debug!("probing {}", path.display());
                 let started = Instant::now();
-                let res = match probe(&mpv, &path) {
+                let res = match probe(mpv, &path) {
                     Some(m) => ProbeResult::Ok(path, m),
                     None => ProbeResult::Failed(path),
                 };

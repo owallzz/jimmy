@@ -83,6 +83,8 @@ pub struct Config {
     pub sub_background_box: bool,
     /// Seconds of data mpv reads ahead (bigger = fewer disk seeks).
     pub readahead_secs: u32,
+    /// Memory cap for read-ahead in MiB. High-bitrate files hit this before `readahead_secs`.
+    pub readahead_mb: u32,
     /// Extra raw mpv options, applied last.
     pub mpv_options: HashMap<String, String>,
 }
@@ -113,6 +115,7 @@ impl Default for Config {
             sub_scale: 1.0,
             sub_background_box: true,
             readahead_secs: 60,
+            readahead_mb: 48,
             mpv_options: HashMap::new(),
         }
     }
@@ -127,6 +130,7 @@ impl Config {
         let mut c: Config = load_toml(&Self::path());
         c.volume_max = c.volume_max.clamp(100, 200);
         c.ui_scale = c.ui_scale.clamp(0.5, 3.0);
+        c.readahead_mb = c.readahead_mb.clamp(8, 1024);
         c
     }
 

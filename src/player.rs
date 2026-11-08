@@ -263,8 +263,10 @@ impl Player {
             ("sigmoid-upscaling", "no".into()),
             ("hdr-compute-peak", "no".into()),
             ("cache", "yes".into()),
-            ("demuxer-max-bytes", "256MiB".into()),
-            ("demuxer-max-back-bytes", "64MiB".into()),
+            // The read-ahead cache is the biggest memory user: cap it by size, not just time.
+            ("demuxer-max-bytes", format!("{}MiB", cfg.readahead_mb)),
+            ("demuxer-max-back-bytes", format!("{}MiB", (cfg.readahead_mb / 6).max(4))),
+            ("demuxer-donate-buffer", "yes".into()),
             ("demuxer-readahead-secs", ahead.clone()),
             ("cache-secs", ahead),
             ("sub-scale", format!("{}", cfg.sub_scale)),
