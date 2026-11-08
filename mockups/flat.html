@@ -1,0 +1,674 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jimmy flat mockups</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@500&display=swap" rel="stylesheet">
+<style>
+/* Every color comes from a theme token (set by JS on #stage). These map 1:1 to egui Visuals later. */
+#stage {
+  --bg: #0c0c0c; --panel: #131313; --raise: #1f1f1f;
+  --text: #e8e6e1; --dim: #8f8c86; --faint: #55534f;
+  --accent: #ffb000; --ink: #0c0c0c; --boost: #ff5a36; --ok: #7bc96f;
+  --alt: color-mix(in srgb, var(--panel) 55%, var(--bg));
+  --tint: color-mix(in srgb, var(--accent) 13%, var(--bg));
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  --sans: "IBM Plex Sans", system-ui, sans-serif;
+}
+* { box-sizing: border-box; border-radius: 0 !important; }
+html, body { margin: 0; height: 100%; background: #000; }
+body { display: flex; flex-direction: column; overflow: hidden; font-family: "IBM Plex Mono", monospace; }
+
+/* ---------- reviewer bar (not part of the app) ---------- */
+#review { flex: none; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 7px 14px;
+  background: #1f1f1f; border-bottom: 1px solid #333; font: 13px "IBM Plex Mono", monospace; color: #aaa; }
+#review button, #review select { font: inherit; background: #2a2a2a; color: #ddd; border: 1px solid #444; padding: 4px 9px; cursor: pointer; }
+#review button.on { background: #ffb000; color: #000; border-color: #ffb000; }
+#review .sep { width: 1px; height: 22px; background: #444; margin: 0 4px; }
+#review a { color: #ddd; }
+#review .note { flex: 1 1 100%; color: #888; }
+#swatch { display: inline-flex; height: 22px; }
+#swatch i { width: 14px; }
+#viewport { flex: 1; position: relative; overflow: hidden; }
+
+/* ---------- 1920x1080 stage, scaled to fit ---------- */
+#stage { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0;
+  background: var(--bg); color: var(--text); overflow: hidden; font: 18px var(--mono); }
+.layer { position: absolute; inset: 0; display: none; }
+.layer.show { display: block; }
+.label { font: 500 12px var(--mono); letter-spacing: 1.5px; text-transform: uppercase; color: var(--faint); }
+.glyph { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; padding: 0 5px;
+  background: var(--raise); font: 600 12px var(--mono); color: var(--text); line-height: 1; }
+.glyph.g-a { color: #6cc25a; } .glyph.g-b { color: #ff5c5c; } .glyph.g-x { color: #4fa3ff; } .glyph.g-y { color: #e8b923; }
+.ps .glyph.g-a { color: #6f9bff; } .ps .glyph.g-b { color: #ff6b6b; } .ps .glyph.g-x { color: #e070c0; } .ps .glyph.g-y { color: #3fc79a; }
+.kb .glyph { color: var(--text) !important; font-weight: 500; }
+
+/* header row (replaces the old top bar): path · filter · clock */
+.head { position: absolute; left: 0; right: 0; top: 0; height: 44px; display: flex; align-items: center; gap: 18px; padding: 0 20px; }
+.path { font-size: 16px; color: var(--dim); white-space: nowrap; }
+.path b { color: var(--text); font-weight: 600; }
+.filter { width: 460px; height: 28px; background: var(--panel); display: flex; align-items: center; gap: 8px; padding: 0 10px; font-size: 14px; color: var(--faint); }
+.filter b { color: var(--accent); }
+.head .meta { font-size: 14px; color: var(--dim); }
+.clock { margin-left: auto; display: flex; align-items: baseline; gap: 14px; }
+.clock .pad { font-size: 12px; color: var(--faint); letter-spacing: 1px; }
+.clock .pad::before { content: "● "; color: var(--ok); }
+.clock .t { font-size: 16px; font-weight: 400; color: var(--dim); }
+
+.hintbar { position: absolute; left: 0; right: 0; bottom: 0; height: 40px; display: flex; align-items: center; gap: 22px; padding: 0 20px;
+  background: var(--bg); font-size: 14px; color: var(--dim); }
+.hint { display: flex; align-items: center; gap: 7px; }
+
+/* ---------- browser ---------- */
+.body { position: absolute; top: 44px; bottom: 40px; left: 0; right: 0; display: grid; grid-template-columns: 1fr 460px; }
+.list { min-width: 0; overflow: hidden; }
+#L-browser .body { bottom: 0; }              /* info panel runs to the bottom edge */
+#L-browser .hintbar { right: 460px; }         /* hints sit under the list only */
+#L-browser .list { padding-bottom: 40px; }
+.cols, .row { display: grid; grid-template-columns: 22px 1fr 150px 100px 90px; align-items: center; gap: 10px; padding: 0 20px; }
+.cols { height: 28px; }
+.cols .r, .row .r { text-align: right; }
+.row { height: 38px; font-size: 18px; }
+.row:nth-child(even) { background: var(--alt); }
+.row .ic { font-size: 14px; color: var(--faint); }
+.row .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .num { font-size: 16px; color: var(--dim); }
+.row.dir .name { font-weight: 600; }
+.row.dir .ic { color: var(--accent); }
+.row.watched .name { color: var(--dim); }
+.prog { height: 4px; background: var(--raise); position: relative; width: 110px; }
+.prog i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); }
+.tag { font: 500 12px var(--mono); letter-spacing: 1px; color: var(--ok); }
+.row.focus { background: var(--accent); color: var(--ink); }
+.row.focus .ic, .row.focus .num, .row.focus .name, .row.focus .tag { color: var(--ink); }
+.row.focus .prog { background: color-mix(in srgb, var(--ink) 25%, transparent); }
+.row.focus .prog i { background: var(--ink); }
+
+.detail { background: var(--panel); padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+.detail h2 { margin: 0; font: 600 22px var(--mono); line-height: 1.3; }
+.kv { display: grid; grid-template-columns: 112px 1fr; row-gap: 7px; font-size: 15px; margin: 0; }
+.kv dt { color: var(--faint); text-transform: uppercase; letter-spacing: 1px; font-size: 12px; padding-top: 3px; }
+.kv dd { margin: 0; overflow-wrap: anywhere; }
+.kv .dim { color: var(--dim); }
+.kv .ends { color: var(--accent); }
+.btns { display: flex; flex-direction: column; gap: 6px; margin-top: auto; }
+.btn { height: 40px; display: flex; align-items: center; gap: 10px; padding: 0 12px; background: var(--raise); font: 500 15px var(--mono); }
+.btn.primary { background: var(--accent); color: var(--ink); }
+.btn .glyph { margin-left: auto; }
+.btn.primary .glyph { background: color-mix(in srgb, var(--ink) 18%, transparent); color: var(--ink) !important; }
+.note-box { background: var(--bg); padding: 10px 12px; font-size: 13px; color: var(--faint); line-height: 1.5; }
+.note-box::before { content: "// "; }
+
+/* ---------- menu drawer ---------- */
+.dim-overlay { position: absolute; inset: 0; background: rgba(0,0,0,.55); }
+.drawer { position: absolute; left: 0; top: 0; bottom: 0; width: 320px; background: var(--panel); padding: 14px 0; display: flex; flex-direction: column; }
+.drawer .label { padding: 12px 20px 4px; }
+.drawer .label::before { content: "# "; }
+.drawer .item { height: 38px; display: flex; align-items: center; gap: 12px; padding: 0 20px; font-size: 17px; }
+.drawer .item .ic { width: 16px; font-size: 14px; color: var(--faint); text-align: center; }
+.drawer .item .n { margin-left: auto; font-size: 13px; color: var(--faint); }
+.drawer .item.cur { color: var(--accent); }
+.drawer .item.focus { background: var(--accent); color: var(--ink); }
+.drawer .item.focus .ic, .drawer .item.focus .n { color: var(--ink); }
+.drawer .grow { flex: 1; }
+.drawer .hintbar { position: static; background: var(--panel); }
+
+/* ---------- player (overlays stay dark: they sit on video) ---------- */
+.scene { position: absolute; inset: 0; overflow: hidden;
+  background: linear-gradient(180deg, #1d2440 0%, #5a3a5c 38%, #c86a4a 62%, #f0a457 72%, #2a1b1e 72.2%, #120d0f 100%); }
+.scene .sun { position: absolute; left: 1180px; top: 560px; width: 220px; height: 220px; background: #ffd08a; border-radius: 50% !important; opacity: .9; }
+.scene .hill1 { position: absolute; inset: 0; background: #1b1316; clip-path: polygon(0 74%, 14% 66%, 28% 71%, 44% 62%, 58% 70%, 74% 64%, 88% 70%, 100% 66%, 100% 100%, 0 100%); }
+.scene .hill2 { position: absolute; inset: 0; background: #0c0809; clip-path: polygon(0 84%, 20% 78%, 38% 86%, 60% 80%, 80% 88%, 100% 82%, 100% 100%, 0 100%); }
+.subtitle { position: absolute; left: 0; right: 0; bottom: 140px; text-align: center; }
+.subtitle span { display: inline-block; background: rgba(0,0,0,.72); padding: 4px 16px; font: 500 42px var(--sans); color: #fff; }
+
+.osd-top { position: absolute; left: 0; right: 0; top: 0; height: 90px; padding: 16px 24px; display: flex; align-items: flex-start;
+  background: linear-gradient(180deg, rgba(0,0,0,.6), rgba(0,0,0,0)); color: rgba(255,255,255,.72); }
+.osd-top .title { font-size: 17px; font-weight: 400; }
+.osd-top .sub { font-size: 13px; color: rgba(255,255,255,.4); margin-top: 3px; }
+.osd-top .right { margin-left: auto; text-align: right; font-size: 16px; color: rgba(255,255,255,.55); }
+.osd-bottom { position: absolute; left: 0; right: 0; bottom: 0; height: 110px; background: linear-gradient(0deg, rgba(0,0,0,.72), rgba(0,0,0,0)); color: rgba(255,255,255,.72); }
+.seekrow { position: absolute; left: 24px; right: 24px; bottom: 44px; display: flex; align-items: center; gap: 14px; font-size: 15px; }
+.seekrow .r { color: rgba(255,255,255,.45); }
+.seek { flex: 1; position: relative; height: 4px; background: rgba(255,255,255,.2); }
+.seek .buf { position: absolute; top: 0; bottom: 0; left: 0; background: rgba(255,255,255,.4); }
+.seek .play { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); opacity: .85; }
+.seek .tick { position: absolute; top: -3px; width: 1px; height: 10px; background: rgba(255,255,255,.5); }
+.seek .thumb { position: absolute; top: -5px; width: 3px; height: 14px; margin-left: -1px; background: rgba(255,255,255,.75); }
+.inforow { position: absolute; left: 24px; right: 24px; bottom: 14px; display: flex; gap: 18px; align-items: center; font-size: 13px; color: rgba(255,255,255,.4); }
+.inforow b { color: rgba(255,255,255,.65); font-weight: 400; }
+.inforow .st { color: var(--accent); opacity: .75; font-weight: 500; }
+.inforow .hints { margin-left: auto; display: flex; gap: 14px; }
+.inforow .hint { gap: 5px; }
+.inforow .glyph { min-width: 18px; height: 18px; font-size: 10px; padding: 0 4px; background: rgba(255,255,255,.1); color: rgba(255,255,255,.6); }
+
+.hud { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); width: 260px; height: 30px; display: flex; align-items: center; gap: 10px;
+  padding: 0 10px; background: rgba(0,0,0,.6); color: rgba(255,255,255,.7); font-size: 12px; }
+.hud .k { color: rgba(255,255,255,.4); letter-spacing: 1px; }
+.hud .bar { flex: 1; position: relative; height: 3px; background: rgba(255,255,255,.2); }
+.hud .bar .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); }
+.hud .bar .boost { position: absolute; top: 0; bottom: 0; left: 50%; background: var(--boost); }
+.hud .bar .mark { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: rgba(255,255,255,.6); }
+.hud .val { min-width: 38px; text-align: right; font-size: 13px; font-weight: 500; }
+.hud.bright .bar .fill { background: #f3efe4; }
+
+/* ---------- tracks panel ---------- */
+.panel { position: absolute; top: 0; right: 0; bottom: 0; width: 440px; background: var(--panel); display: flex; flex-direction: column; }
+.tabs { display: flex; align-items: center; height: 42px; flex: none; background: var(--bg); padding: 0 8px; gap: 4px; }
+.tabs .t { flex: 1; height: 30px; display: flex; align-items: center; justify-content: center; font: 500 13px var(--mono); letter-spacing: 1.5px; color: var(--dim); }
+.tabs .t.on { background: var(--accent); color: var(--ink); }
+.section .label { display: block; padding: 12px 16px 4px; }
+.section .label::before { content: "# "; }
+.opt { height: 36px; display: flex; align-items: center; gap: 12px; padding: 0 16px; font-size: 16px; }
+.opt .radio { width: 10px; height: 10px; background: var(--raise); flex: none; }
+.opt.sel .radio { background: var(--accent); }
+.opt .meta { margin-left: auto; font-size: 13px; color: var(--dim); }
+.opt.focus { background: var(--accent); color: var(--ink); }
+.opt.focus .meta { color: var(--ink); }
+.opt.focus .radio { background: color-mix(in srgb, var(--ink) 30%, transparent); }
+.opt.sel.focus .radio { background: var(--ink); }
+.stepper { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 15px; }
+.stepper .arr { color: var(--faint); font-size: 12px; }
+.stepper .v { min-width: 90px; text-align: center; }
+.panel .hintbar { position: static; margin-top: auto; background: var(--bg); gap: 16px; padding: 0 16px; }
+
+/* ---------- palette ---------- */
+.palette { position: absolute; top: 90px; left: 50%; transform: translateX(-50%); width: 820px; background: var(--panel); }
+.palette .input { height: 50px; display: flex; align-items: center; gap: 12px; padding: 0 16px; background: var(--raise); }
+.palette .input .pr { font-weight: 600; font-size: 22px; color: var(--accent); }
+.palette input { flex: 1; background: transparent; border: 0; outline: 0; color: var(--text); font: 22px var(--mono); caret-color: var(--accent); }
+.palette .count { font-size: 13px; color: var(--faint); }
+.cmd { height: 38px; display: grid; grid-template-columns: 120px 1fr auto; align-items: center; gap: 14px; padding: 0 16px; font-size: 16px; }
+.cmd .cat { font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--faint); }
+.cmd .binds { display: flex; gap: 6px; }
+.cmd mark { background: transparent; color: var(--accent); }
+.cmd.focus { background: var(--accent); color: var(--ink); }
+.cmd.focus .cat, .cmd.focus mark { color: var(--ink); }
+.cmd.focus mark { text-decoration: underline; }
+.cmd.focus .glyph { background: color-mix(in srgb, var(--ink) 18%, transparent); color: var(--ink) !important; }
+.palette .group { padding: 10px 16px 4px; }
+.palette .foot { height: 34px; display: flex; align-items: center; gap: 18px; padding: 0 16px; font-size: 13px; color: var(--dim); background: var(--bg); }
+.palette .foot .hint { gap: 6px; }
+
+/* ---------- settings ---------- */
+.catbar { position: absolute; top: 44px; left: 0; right: 0; height: 38px; display: flex; align-items: center; gap: 4px; padding: 0 20px; }
+.catbar .c { height: 30px; display: flex; align-items: center; padding: 0 14px; font-size: 15px; color: var(--dim); }
+.catbar .c.on { background: var(--accent); color: var(--ink); font-weight: 500; }
+.catbar .glyph { margin: 0 6px; }
+.content { position: absolute; top: 82px; bottom: 40px; left: 0; right: 0; padding: 12px 20px; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
+.subtabs { display: flex; gap: 4px; }
+.subtabs div { padding: 5px 12px; font: 500 13px var(--mono); letter-spacing: 1.5px; color: var(--dim); background: var(--panel); }
+.subtabs div.on { background: var(--raise); color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
+.banner { background: var(--tint); padding: 9px 14px; display: flex; align-items: center; gap: 12px; font-size: 16px; }
+.banner .blink { width: 10px; height: 10px; background: var(--accent); animation: blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.banner .small { margin-left: auto; display: flex; gap: 16px; font-size: 13px; color: var(--dim); align-items: center; }
+.brow { display: grid; grid-template-columns: 1fr 120px 200px 200px; align-items: center; height: 34px; padding: 0 12px; gap: 12px; font-size: 16px; }
+.brow:nth-child(even):not(.focus) { background: var(--alt); }
+.brow.th { height: 26px; background: transparent !important; }
+.brow .ctx { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; }
+.brow .slot { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--faint); }
+.brow.focus { background: var(--tint); }
+.brow.focus > span:first-child { color: var(--accent); font-weight: 600; }
+.brow .slot.listen { background: var(--accent); color: var(--ink); height: 24px; padding: 0 8px; font-size: 12px; font-weight: 600; animation: blinkbg 1s steps(2) infinite; }
+@keyframes blinkbg { 50% { background: transparent; color: var(--accent); } }
+.formrows { display: grid; grid-template-columns: 1fr 1fr; gap: 0 32px; }
+.frow { height: 34px; display: flex; align-items: center; font-size: 16px; padding: 0 12px; }
+.frow:nth-child(4n+1), .frow:nth-child(4n+2) { background: var(--alt); }
+</style>
+</head>
+<body>
+
+<div id="review">
+  <span>jimmy · flat</span><span class="sep"></span>
+  <button data-screen="browser">1 Browser</button>
+  <button data-screen="menu">2 Menu</button>
+  <button data-screen="player">3 Player</button>
+  <button data-screen="tracks">4 Tracks</button>
+  <button data-screen="palette">5 Palette</button>
+  <button data-screen="settings">6 Controls</button>
+  <span class="sep"></span>
+  <button data-glyph="xbox">Xbox</button>
+  <button data-glyph="ps">PS5</button>
+  <button data-glyph="kb">Keyboard</button>
+  <span class="sep"></span>
+  <button id="tprev" title="Previous scheme ([)">◀</button>
+  <select id="tsel"></select>
+  <button id="tnext" title="Next scheme (])">▶</button>
+  <span id="swatch"></span>
+  <span class="sep"></span>
+  <a href="index.html">classic</a> <a href="tui.html">tui</a>
+  <span class="note" id="note"></span>
+</div>
+
+<div id="viewport"><div id="stage">
+
+  <!-- ================= BROWSER ================= -->
+  <div class="layer" id="L-browser">
+    <div class="head">
+      <div class="path">/mnt/media/<b>Movies</b></div>
+      <div class="filter"><b>/</b>type to filter</div>
+      <div class="meta">11 items · name ↑</div>
+      <div class="clock"><span class="t">21:04</span></div>
+    </div>
+    <div class="body">
+      <div class="list">
+        <div class="cols"><span></span><span class="label">Name</span><span class="label">Progress</span><span class="label r">Length</span><span class="label r">Size</span></div>
+        <div id="rows"></div>
+      </div>
+      <div class="detail" id="detail"></div>
+    </div>
+    <div class="hintbar" data-hints="browser"></div>
+  </div>
+
+  <!-- ================= MENU DRAWER (over browser) ================= -->
+  <div class="layer" id="L-menu">
+    <div class="dim-overlay"></div>
+    <div class="drawer">
+      <div class="label">Library</div>
+      <div class="item"><span class="ic">▶</span>Continue watching<span class="n">3</span></div>
+      <div class="item"><span class="ic">◷</span>Recently played</div>
+      <div class="label">Folders</div>
+      <div class="item cur"><span class="ic">▤</span>Movies<span class="n">11</span></div>
+      <div class="item focus"><span class="ic">▤</span>TV Shows<span class="n">24</span></div>
+      <div class="item"><span class="ic">▤</span>Downloads<span class="n">7</span></div>
+      <div class="item"><span class="ic">⏏</span>USB: BACKUP-2TB</div>
+      <div class="grow"></div>
+      <div class="item"><span class="ic">⚙</span>Settings</div>
+      <div class="item"><span class="ic">×</span>Quit jimmy</div>
+      <div class="hintbar" data-hints="menu"></div>
+    </div>
+  </div>
+
+  <!-- ================= PLAYER ================= -->
+  <div class="layer" id="L-player">
+    <div class="scene"><div class="sun"></div><div class="hill1"></div><div class="hill2"></div></div>
+    <div class="subtitle"><span>We should have left before the snow came.</span></div>
+    <div class="osd-top">
+      <div><div class="title">The Long Way Home (2019)</div><div class="sub">MKV · H.264 1080p · hw vaapi</div></div>
+      <div class="right">21:04<div class="sub">ends 21:45</div></div>
+    </div>
+    <div class="hud" id="hud"></div>
+    <div class="osd-bottom" id="osd-bottom">
+      <div class="seekrow">
+        <span>01:12:33</span>
+        <div class="seek">
+          <div class="buf" style="width:67.5%"></div>
+          <div class="play" style="width:63.7%"></div>
+          <div class="tick" style="left:11%"></div><div class="tick" style="left:29%"></div><div class="tick" style="left:47%"></div>
+          <div class="tick" style="left:63%"></div><div class="tick" style="left:84%"></div>
+          <div class="thumb" style="left:63.7%"></div>
+        </div>
+        <span class="r">−00:41:20</span>
+      </div>
+      <div class="inforow">
+        <span class="st" id="pstate">▶ PLAYING</span>
+        <span>ch <b>4/6</b></span>
+        <span>vol <b id="volchip">145%</b></span>
+        <span>sub <b>English</b></span>
+        <span>aud <b>English 5.1</b></span>
+        <span>1.00×</span>
+        <div class="hints" data-hints="player"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= TRACKS (over player) ================= -->
+  <div class="layer" id="L-tracks">
+    <div class="dim-overlay"></div>
+    <div class="panel">
+      <div class="tabs"><span class="glyph" data-g="lb"></span><div class="t on">SUBTITLES</div><div class="t">AUDIO</div><div class="t">VIDEO</div><span class="glyph" data-g="rb"></span></div>
+      <div class="section">
+        <span class="label">Track</span>
+        <div class="opt"><span class="radio"></span>Off</div>
+        <div class="opt sel focus"><span class="radio"></span>English<span class="meta">SRT · external</span></div>
+        <div class="opt"><span class="radio"></span>English SDH<span class="meta">PGS · embedded</span></div>
+        <div class="opt"><span class="radio"></span>Español<span class="meta">ASS · embedded</span></div>
+        <div class="opt"><span class="radio"></span>Closed captions<span class="meta">EIA-608</span></div>
+        <div class="opt"><span class="radio"></span>Load from file…<span class="meta">browse</span></div>
+      </div>
+      <div class="section">
+        <span class="label">Adjust</span>
+        <div class="opt">Delay<div class="stepper"><span class="arr">◀</span><span class="v">−0.20 s</span><span class="arr">▶</span></div></div>
+        <div class="opt">Size<div class="stepper"><span class="arr">◀</span><span class="v">110%</span><span class="arr">▶</span></div></div>
+        <div class="opt">Position<div class="stepper"><span class="arr">◀</span><span class="v">bottom</span><span class="arr">▶</span></div></div>
+        <div class="opt">Background<div class="stepper"><span class="arr">◀</span><span class="v">box</span><span class="arr">▶</span></div></div>
+      </div>
+      <div class="hintbar" data-hints="tracks"></div>
+    </div>
+  </div>
+
+  <!-- ================= PALETTE (over browser) ================= -->
+  <div class="layer" id="L-palette">
+    <div class="dim-overlay"></div>
+    <div class="palette">
+      <div class="input"><span class="pr">&gt;</span><input id="pin" value="sub" spellcheck="false" autocomplete="off"><span class="count" id="pcount"></span></div>
+      <div id="plist"></div>
+      <div class="foot" data-hints="palette"></div>
+    </div>
+  </div>
+
+  <!-- ================= SETTINGS / CONTROLS ================= -->
+  <div class="layer" id="L-settings">
+    <div class="head">
+      <div class="path">Settings / <b>Controls</b></div>
+      <div class="clock"><span class="t">21:04</span></div>
+    </div>
+    <div class="catbar">
+      <span class="glyph" data-g="lb"></span>
+      <div class="c">General</div><div class="c">Library</div><div class="c">Playback</div><div class="c">Subtitles</div>
+      <div class="c">Volume &amp; brightness</div><div class="c">Appearance</div><div class="c on">Controls</div><div class="c">About</div>
+      <span class="glyph" data-g="rb"></span>
+    </div>
+    <div class="content">
+      <div class="subtabs"><div id="st-pad" class="on">GAMEPAD</div><div id="st-kb">KEYBOARD</div></div>
+      <div class="banner"><span class="blink"></span><span>Rebinding <b>Brightness up</b>. Press a button or move a stick.</span><span class="small" data-hints="listen"></span></div>
+      <div id="btable"></div>
+      <div class="formrows">
+        <div class="frow">Stick deadzone<div class="stepper"><span class="arr">◀</span><span class="v">15%</span><span class="arr">▶</span></div></div>
+        <div class="frow">Repeat delay<div class="stepper"><span class="arr">◀</span><span class="v">350 ms</span><span class="arr">▶</span></div></div>
+        <div class="frow">Trigger scrub speed<div class="stepper"><span class="arr">◀</span><span class="v">up to 8×</span><span class="arr">▶</span></div></div>
+        <div class="frow">Button style<div class="stepper"><span class="arr">◀</span><span class="v">auto</span><span class="arr">▶</span></div></div>
+      </div>
+    </div>
+    <div class="hintbar" data-hints="settings"></div>
+  </div>
+
+</div></div>
+
+<script>
+/* ---------- 20 color schemes: bg, panel, raise, text, dim, faint, accent, ink (text on accent), boost, ok ---------- */
+const THEMES = [
+  ["Amber CRT",        "#0c0c0c","#131313","#1f1f1f","#e8e6e1","#8f8c86","#55534f","#ffb000","#0c0c0c","#ff5a36","#7bc96f"],
+  ["Green phosphor",   "#060a06","#0c130c","#152215","#b9f3b1","#62a05c","#37593a","#39ff6a","#031003","#ff6040","#39ff6a"],
+  ["Darkroom red",     "#0a0505","#130a0a","#201010","#ecd0ca","#a0726b","#5c3c38","#ff3b30","#0a0505","#ffb000","#d0a050"],
+  ["Mono",             "#0b0b0b","#151515","#242424","#eeeeee","#8c8c8c","#525252","#ffffff","#000000","#ff5a5a","#bdbdbd"],
+  ["IBM blue",         "#0a0f1e","#0f1730","#18234a","#dfe6ff","#8692c0","#4a557e","#5c8dff","#050a18","#ff6b5a","#7ad1a0"],
+  ["Gruvbox",          "#1d2021","#282828","#3c3836","#ebdbb2","#a89984","#665c54","#fabd2f","#1d2021","#fb4934","#b8bb26"],
+  ["Nord",             "#2e3440","#3b4252","#434c5e","#eceff4","#a3abba","#69728a","#88c0d0","#2e3440","#bf616a","#a3be8c"],
+  ["Solarized dark",   "#002b36","#073642","#0e4655","#eee8d5","#93a1a1","#587179","#b58900","#002b36","#dc322f","#859900"],
+  ["Tokyo Night",      "#1a1b26","#20212e","#2b2d40","#c0caf5","#8089b3","#4b5070","#7aa2f7","#1a1b26","#f7768e","#9ece6a"],
+  ["Catppuccin Mocha", "#181825","#1e1e2e","#313244","#cdd6f4","#a6adc8","#6c7086","#cba6f7","#1e1e2e","#f38ba8","#a6e3a1"],
+  ["Rosé Pine",        "#191724","#1f1d2e","#26233a","#e0def4","#908caa","#6e6a86","#ebbcba","#191724","#eb6f92","#9ccfd8"],
+  ["Everforest",       "#272e33","#2e383c","#374145","#d3c6aa","#9da9a0","#62706b","#a7c080","#272e33","#e67e80","#83c092"],
+  ["Kanagawa",         "#16161d","#1f1f28","#2a2a37","#dcd7ba","#9a9888","#54546d","#e6c384","#16161d","#ff5d62","#98bb6c"],
+  ["Monokai",          "#1e1f1c","#272822","#3e3d32","#f8f8f2","#a59f85","#75715e","#a6e22e","#1e1f1c","#f92672","#e6db74"],
+  ["One Dark",         "#21252b","#282c34","#323842","#dcdfe4","#8a92a0","#5c6370","#61afef","#21252b","#e06c75","#98c379"],
+  ["Dracula",          "#21222c","#282a36","#343746","#f8f8f2","#a0a4bf","#6272a4","#bd93f9","#21222c","#ff5555","#50fa7b"],
+  ["Synthwave",        "#140b24","#1c1033","#2a1a4a","#f4e9ff","#a68cc7","#5e4a80","#ff2bd6","#140b24","#ffb000","#36f9f6"],
+  ["Deep ocean",       "#0b1a1f","#10242b","#17323b","#d8f1f0","#7fa9ad","#46666b","#2ee6c8","#04201c","#ff6b5a","#2ee6c8"],
+  ["Paper (light)",    "#f4f1ea","#ebe7dd","#ddd8cb","#1f1d1a","#6b665c","#a39d90","#d9480f","#ffffff","#c92a2a","#2b8a3e"],
+  ["Solarized light",  "#fdf6e3","#eee8d5","#e2dac2","#073642","#586e75","#93a1a1","#268bd2","#fdf6e3","#dc322f","#859900"],
+];
+const TKEYS = ["bg","panel","raise","text","dim","faint","accent","ink","boost","ok"];
+let themeIdx = 0;
+function applyTheme(i) {
+  themeIdx = (i + THEMES.length) % THEMES.length;
+  const t = THEMES[themeIdx], st = document.getElementById("stage");
+  TKEYS.forEach((k, j) => st.style.setProperty("--" + k, t[j + 1]));
+  document.getElementById("tsel").value = themeIdx;
+  document.getElementById("swatch").innerHTML = [1,2,3,4,7,9,10].map(j => `<i style="background:${t[j]}"></i>`).join("");
+  try { localStorage.setItem("jimmy-theme", themeIdx); } catch (e) {}
+}
+const tsel = document.getElementById("tsel");
+tsel.innerHTML = THEMES.map((t, i) => `<option value="${i}">${String(i + 1).padStart(2, "0")} ${t[0]}</option>`).join("");
+tsel.onchange = () => applyTheme(+tsel.value);
+document.getElementById("tprev").onclick = () => applyTheme(themeIdx - 1);
+document.getElementById("tnext").onclick = () => applyTheme(themeIdx + 1);
+
+/* ---------- glyphs & hints ---------- */
+const GLYPHS = {
+  xbox: { a:["A","g-a"], b:["B","g-b"], x:["X","g-x"], y:["Y","g-y"], lb:["LB"], rb:["RB"], lt:["LT"], rt:["RT"],
+          up:["▲"], down:["▼"], dpadlr:["◀▶"], dpadud:["▲▼"], menu:["≡"], view:["⧉"], rsud:["RS▲▼"], rsup:["RS▲"], rsdown:["RS▼"], lslr:["LS◀▶"] },
+  ps:   { a:["✕","g-a"], b:["○","g-b"], x:["□","g-x"], y:["△","g-y"], lb:["L1"], rb:["R1"], lt:["L2"], rt:["R2"],
+          up:["▲"], down:["▼"], dpadlr:["◀▶"], dpadud:["▲▼"], menu:["≡"], view:["⧉"], rsud:["RS▲▼"], rsup:["RS▲"], rsdown:["RS▼"], lslr:["LS◀▶"] },
+  kb:   { a:["Enter"], b:["Esc"], x:["O"], y:["Ctrl+P"], lb:["["], rb:["]"], lt:["Shift+←"], rt:["Shift+→"],
+          up:["↑"], down:["↓"], dpadlr:["← →"], dpadud:["↑ ↓"], menu:["Tab"], view:["F"], rsud:["PgUp/Dn"], rsup:["PgUp"], rsdown:["PgDn"], lslr:["← →"] },
+};
+const PADNAME = { xbox: "XBOX", ps: "DUALSENSE", kb: "KEYBOARD" };
+const KB_OVERRIDE = { player: { a: "Space", x: "J", y: "#", menu: "T" } };
+const HINTS = {
+  browser: [["a","Play"],["b","Back"],["x","Options"],["y","Commands"],["menu","Menu"],["view","Fullscreen"]],
+  menu:    [["dpadud","Move"],["a","Open"],["b","Close"]],
+  player:  [["a","Pause"],["dpadlr","Seek"],["dpadud","Vol"],["rsud","Bright"],["x","Subs"],["menu","Tracks"]],
+  tracks:  [["a","Select"],["dpadlr","Adjust"],["lb","/"],["rb","Tab"],["b","Close"]],
+  palette: [["dpadud","Move"],["a","Run"],["b","Close"]],
+  settings:[["a","Rebind"],["x","Clear"],["lb","/"],["rb","Section"],["view","Gamepad / Keyboard"],["b","Back"]],
+  listen:  [["b","Cancel"],["menu","Hold to clear"]],
+};
+let glyphSet = "xbox", screen = "browser";
+function glyphHTML(key, ctx) {
+  let [txt, cls] = GLYPHS[glyphSet][key] || [key];
+  if (glyphSet === "kb" && KB_OVERRIDE[ctx] && KB_OVERRIDE[ctx][key]) txt = KB_OVERRIDE[ctx][key];
+  return `<span class="glyph ${cls || ""}">${txt}</span>`;
+}
+function renderHints() {
+  document.querySelectorAll("[data-hints]").forEach(el => {
+    const ctx = el.dataset.hints;
+    el.innerHTML = HINTS[ctx].map(([k, label]) => label === "/" ? glyphHTML(k, ctx) : `<span class="hint">${glyphHTML(k, ctx)}${label}</span>`).join("");
+  });
+  document.querySelectorAll("[data-g]").forEach(el => { const [t, c] = GLYPHS[glyphSet][el.dataset.g]; el.textContent = t; el.className = "glyph " + (c || ""); });
+  document.querySelectorAll("[data-padname]").forEach(el => el.textContent = PADNAME[glyphSet]);
+  const st = document.getElementById("stage");
+  st.classList.toggle("ps", glyphSet === "ps"); st.classList.toggle("kb", glyphSet === "kb");
+  renderPalette(); renderBindings(); renderDetail();
+}
+
+/* ---------- browser ---------- */
+const NOW = 21 * 3600 + 4 * 60;  // mockup clock: 21:04
+const secs = s => s.split(":").reduce((a, b) => a * 60 + +b, 0);
+const hhmm = t => { t = Math.round(t / 60) % 1440; return String(Math.floor(t / 60)).padStart(2, "0") + ":" + String(t % 60).padStart(2, "0"); };
+const dur = t => { const m = Math.round(t / 60); return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`; };
+const FILES = [
+  { dir:true, name:"Collections", count:"14 items" },
+  { dir:true, name:"Criterion", count:"32 items" },
+  { name:"Alien (1979).mkv", size:"12.4 GB", len:"1:57:04", prog:1, watched:true, subs:"en.srt", mod:"2024-03-02" },
+  { name:"Arrival (2016).mkv", size:"8.1 GB", len:"1:56:10", prog:.18, subs:"—", mod:"2024-06-11", pos:"0:21:02" },
+  { name:"Heat (1995).avi", size:"1.4 GB", len:null, prog:0, subs:"—", mod:"2019-11-30" },
+  { name:"In the Mood for Love (2000).mkv", size:"6.7 GB", len:null, prog:0, subs:"en.srt, zh.srt", mod:"2023-01-08" },
+  { name:"Moon (2009).mp4", size:"2.2 GB", len:"1:37:12", prog:1, watched:true, subs:"embedded", mod:"2022-08-19" },
+  { name:"Paris, Texas (1984).mkv", size:"9.9 GB", len:null, prog:0, subs:"en.srt", mod:"2025-02-14" },
+  { name:"The Long Way Home (2019).mkv", size:"7.3 GB", len:"1:53:53", prog:.637, subs:"en.srt, es.srt", mod:"2025-10-29", pos:"1:12:33" },
+  { name:"The Third Man (1949).mkv", size:"4.0 GB", len:null, prog:0, subs:"en.srt", mod:"2021-05-03" },
+  { name:"Wild Strawberries (1957).mkv", size:"5.5 GB", len:null, prog:0, subs:"—", mod:"2023-09-21" },
+];
+let focus = 8;
+function renderRows() {
+  document.getElementById("rows").innerHTML = FILES.map((f, i) => {
+    const cls = ["row", f.dir ? "dir" : "", f.watched ? "watched" : "", i === focus ? "focus" : ""].join(" ");
+    let prog = "";
+    if (f.watched) prog = `<span class="tag">✓ WATCHED</span>`;
+    else if (f.prog > 0) prog = `<div class="prog"><i style="width:${f.prog * 100}%"></i></div>`;
+    return `<div class="${cls}" data-i="${i}"><span class="ic">${f.dir ? "▸" : "·"}</span>
+      <span class="name">${f.dir ? f.name + "/" : f.name}</span><span>${prog}</span>
+      <span class="num r">${f.dir ? "" : (f.len || "—")}</span><span class="num r">${f.dir ? f.count : f.size}</span></div>`;
+  }).join("");
+  document.querySelectorAll("#rows .row").forEach(r => r.onclick = () => { focus = +r.dataset.i; renderRows(); renderDetail(); });
+}
+function lengthCell(f) {
+  if (!f.len) return `<dd style="color:var(--faint)">after first play</dd>`;
+  const total = secs(f.len), from = f.pos ? secs(f.pos) : 0, left = total - from;
+  return `<dd>${f.len} <span class="dim">·</span> ${f.pos ? `<span class="dim">${dur(left)} left ·</span> ` : ""}<span class="ends">ends ${hhmm(NOW + left)}</span></dd>`;
+}
+function renderDetail() {
+  const f = FILES[focus], el = document.getElementById("detail"); if (!el) return;
+  if (f.dir) {
+    el.innerHTML = `<h2>${f.name}/</h2><dl class="kv"><dt>Contains</dt><dd>${f.count}</dd><dt>Path</dt><dd class="dim">/mnt/media/Movies/${f.name}</dd></dl>
+      <div class="btns"><div class="btn primary">Open folder ${glyphHTML("a", "browser")}</div><div class="btn">Play all ${glyphHTML("x", "browser")}</div></div>`;
+    return;
+  }
+  el.innerHTML = `<h2>${f.name.replace(/\.[^.]+$/, "")}</h2>
+    <dl class="kv">
+      <dt>File</dt><dd class="dim">${f.name}</dd>
+      <dt>Length</dt>${lengthCell(f)}
+      ${f.pos ? `<dt>Stopped at</dt><dd>${f.pos}</dd>` : ""}
+      <dt>Size</dt><dd>${f.size}</dd>
+      <dt>Container</dt><dd>${f.name.split(".").pop().toUpperCase()}</dd>
+      <dt>Subtitles</dt><dd>${f.subs}</dd>
+      <dt>Modified</dt><dd>${f.mod}</dd>
+    </dl>
+    ${f.len ? "" : `<div class="note-box">Not played yet. jimmy doesn't open files just to list them, so slow disks stay fast. Length and end time fill in after the first play.</div>`}
+    <div class="btns">
+      ${f.pos ? `<div class="btn primary">▶ Resume from ${f.pos} ${glyphHTML("a", "browser")}</div><div class="btn">↺ Play from start ${glyphHTML("x", "browser")}</div>`
+              : `<div class="btn primary">▶ Play ${glyphHTML("a", "browser")}</div><div class="btn">Options ${glyphHTML("x", "browser")}</div>`}
+    </div>`;
+}
+
+/* ---------- player HUD ---------- */
+let vol = 145, bright = 60, hudMode = "vol", paused = false;
+function renderHud() {
+  const h = document.getElementById("hud");
+  if (hudMode === "vol") {
+    const sys = Math.min(vol, 100), boost = Math.max(vol - 100, 0);
+    h.className = "hud";
+    h.innerHTML = `<span class="k">VOL</span><div class="bar"><div class="fill" style="width:${sys / 2}%"></div>${boost ? `<div class="boost" style="width:${boost / 2}%"></div>` : ""}<div class="mark"></div></div><span class="val" style="color:${boost ? "var(--boost)" : "inherit"}">${vol}%</span>`;
+  } else {
+    h.className = "hud bright";
+    h.innerHTML = `<span class="k">BRT</span><div class="bar"><div class="fill" style="width:${bright}%"></div></div><span class="val">${bright}%</span>`;
+  }
+  document.getElementById("volchip").textContent = vol + "%";
+  document.getElementById("pstate").textContent = paused ? "❚❚ PAUSED" : "▶ PLAYING";
+}
+
+/* ---------- palette ---------- */
+const CMDS = [
+  ["Subtitles","Next subtitle track","x","J"], ["Subtitles","Subtitles off",null,"Shift+J"],
+  ["Subtitles","Subtitle delay +0.1 s",null,"Z"], ["Subtitles","Subtitle delay −0.1 s",null,"Shift+Z"],
+  ["Subtitles","Subtitle size bigger",null,"Alt+="], ["Subtitles","Load subtitle file…",null,null],
+  ["Audio","Next audio track","y","#"], ["Audio","Volume up","up","↑"], ["Audio","Volume down","down","↓"], ["Audio","Mute",null,"M"],
+  ["Display","Brightness up","rsup","PgUp"], ["Display","Brightness down","rsdown","PgDn"], ["Display","Toggle fullscreen","view","F"],
+  ["Display","Next color scheme",null,"]"],
+  ["Playback","Play / Pause","a","Space"], ["Playback","Rescue mode (slow CPU)",null,"Ctrl+R"],
+  ["Go to","Movies",null,null], ["Go to","TV Shows",null,null], ["Go to","Continue watching",null,null], ["App","Settings: Controls",null,","],
+];
+let pfocus = 0;
+function matches(str, q) {
+  const lower = str.toLowerCase(), out = [];
+  for (const w of q.toLowerCase().split(/\s+/).filter(Boolean)) { const i = lower.indexOf(w); if (i < 0) return null; out.push([i, i + w.length]); }
+  return out;
+}
+function hl(str, ranges) {
+  if (!ranges.length) return str;
+  ranges = ranges.slice().sort((a, b) => a[0] - b[0]); let o = "", p = 0;
+  for (const [s, e] of ranges) { if (s < p) continue; o += str.slice(p, s) + "<mark>" + str.slice(s, e) + "</mark>"; p = e; }
+  return o + str.slice(p);
+}
+function renderPalette() {
+  const input = document.getElementById("pin"), q = input.value.trim();
+  const res = CMDS.map(c => ({ c, m: q ? matches(c[0] + " " + c[1], q) : [] })).filter(r => r.m !== null);
+  pfocus = Math.min(pfocus, Math.max(res.length - 1, 0));
+  document.getElementById("pcount").textContent = `${res.length} / ${CMDS.length}`;
+  document.getElementById("plist").innerHTML = (q ? "" : `<div class="group label">Recent</div>`) +
+    res.slice(0, 10).map((r, i) => {
+      const [cat, name, pad, kb] = r.c, off = cat.length + 1;
+      const nr = r.m.map(([s, e]) => [s - off, e - off]).filter(([s]) => s >= 0);
+      const binds = (kb ? `<span class="glyph">${kb}</span>` : "") + (pad && glyphSet !== "kb" ? glyphHTML(pad, "player") : "");
+      return `<div class="cmd ${i === pfocus ? "focus" : ""}"><span class="cat">${cat}</span><span>${hl(name, nr)}</span><span class="binds">${binds}</span></div>`;
+    }).join("") + (res.length ? "" : `<div class="cmd"><span class="cat">—</span><span style="color:var(--dim)">no matching command</span><span></span></div>`);
+}
+
+/* ---------- bindings ---------- */
+const BINDS = [
+  ["Play / Pause","Player","a",null], ["Seek −10 s / +10 s","Player","dpadlr","lslr"], ["Seek −60 s / +60 s","Player","lb","rb"],
+  ["Scrub (hold, analog)","Player","lt","rt"], ["Volume up / down","Player","dpadud",null], ["Brightness up","Player","LISTEN",null],
+  ["Brightness down","Player","rsdown",null], ["Next subtitle track","Player","x",null], ["Next audio track","Player","y",null],
+  ["Command palette","Browser","y",null], ["Menu","Browser","menu",null], ["Toggle fullscreen","Global","view",null], ["Back","Global","b",null],
+];
+function renderBindings() {
+  const t = document.getElementById("btable");
+  t.innerHTML = `<div class="brow th"><span class="label">Action</span><span class="label">Context</span><span class="label">${glyphSet === "kb" ? "Key" : "Button"}</span><span class="label">Alternate</span></div>` +
+    BINDS.map(([act, ctx, p1, p2]) => {
+      const c = ctx === "Player" ? "player" : "";
+      const s1 = p1 === "LISTEN" ? `<span class="slot listen">${glyphSet === "kb" ? "PRESS A KEY…" : "PRESS A BUTTON…"}</span>` : `<span class="slot">${glyphHTML(p1, c)}</span>`;
+      return `<div class="brow ${p1 === "LISTEN" ? "focus" : ""}"><span>${act}</span><span class="ctx">${ctx}</span>${s1}<span class="slot">${p2 ? glyphHTML(p2, c) : "—"}</span></div>`;
+    }).join("");
+  document.getElementById("st-pad").classList.toggle("on", glyphSet !== "kb");
+  document.getElementById("st-kb").classList.toggle("on", glyphSet === "kb");
+}
+
+/* ---------- screens ---------- */
+const NOTES = {
+  browser: "↑/↓ move, Enter play. No sidebar or top bar: folders live in the Menu drawer (≡ / Tab). End time is shown next to Length. [ and ] cycle color schemes on any screen.",
+  menu: "Menu drawer, opened with ≡ (gamepad) or Tab (keyboard). Holds library views, folders, settings, quit.",
+  player: "↑/↓ volume (past 100% = boost), PgUp/PgDn brightness, Space pause, T tracks. Controls auto-hide after a few seconds in the real app.",
+  tracks: "Track and caption menu over the paused video.",
+  palette: "Type to filter commands, ↑/↓ to move.",
+  settings: "Settings sections are tabs now (LB/RB), no sidebar. One action is listening for a new button.",
+};
+const SCREENS = ["browser", "menu", "player", "tracks", "palette", "settings"];
+function show(s) {
+  screen = s;
+  const vis = { browser:["browser"], menu:["browser","menu"], player:["player"], tracks:["player","tracks"], palette:["browser","palette"], settings:["settings"] }[s];
+  document.querySelectorAll(".layer").forEach(l => l.classList.toggle("show", vis.includes(l.id.slice(2))));
+  document.querySelectorAll("[data-screen]").forEach(b => b.classList.toggle("on", b.dataset.screen === s));
+  document.getElementById("note").textContent = NOTES[s];
+  if (s === "palette") setTimeout(() => document.getElementById("pin").focus(), 0); else document.getElementById("pin").blur();
+  document.getElementById("hud").style.display = s === "tracks" ? "none" : "";
+  document.getElementById("osd-bottom").style.display = s === "tracks" ? "none" : "";
+  if (s === "tracks") paused = true;
+  if (s === "player") paused = false;
+  renderHud();
+}
+function setGlyph(g) {
+  glyphSet = g;
+  document.querySelectorAll("[data-glyph]").forEach(b => b.classList.toggle("on", b.dataset.glyph === g));
+  renderHints();
+}
+document.querySelectorAll("[data-screen]").forEach(b => b.onclick = () => show(b.dataset.screen));
+document.querySelectorAll("[data-glyph]").forEach(b => b.onclick = () => setGlyph(b.dataset.glyph));
+document.getElementById("pin").addEventListener("input", () => { pfocus = 0; renderPalette(); });
+
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "SELECT") return;
+  const typing = e.target.id === "pin";
+  if (!typing && e.key === "[") return applyTheme(themeIdx - 1);
+  if (!typing && e.key === "]") return applyTheme(themeIdx + 1);
+  if (!typing && /^[1-6]$/.test(e.key)) return show(SCREENS[+e.key - 1]);
+  if (screen === "browser") {
+    if (e.key === "ArrowDown") focus = Math.min(focus + 1, FILES.length - 1);
+    else if (e.key === "ArrowUp") focus = Math.max(focus - 1, 0);
+    else if (e.key === "Enter" && !FILES[focus].dir) return show("player");
+    else if (e.key === "Tab") { e.preventDefault(); return show("menu"); }
+    else if ((e.ctrlKey || e.metaKey) && e.key === "p") { e.preventDefault(); return show("palette"); }
+    else return;
+    e.preventDefault(); renderRows(); renderDetail();
+  } else if (screen === "menu") {
+    if (e.key === "Escape" || e.key === "Tab") { e.preventDefault(); show("browser"); }
+  } else if (screen === "player") {
+    if (e.key === "ArrowUp") { vol = Math.min(vol + 5, 200); hudMode = "vol"; }
+    else if (e.key === "ArrowDown") { vol = Math.max(vol - 5, 0); hudMode = "vol"; }
+    else if (e.key === "PageUp") { bright = Math.min(bright + 5, 100); hudMode = "bright"; }
+    else if (e.key === "PageDown") { bright = Math.max(bright - 5, 5); hudMode = "bright"; }
+    else if (e.key === " ") paused = !paused;
+    else if (e.key === "Escape") return show("browser");
+    else if (e.key === "t") return show("tracks");
+    else return;
+    e.preventDefault(); renderHud();
+  } else if (screen === "palette") {
+    if (e.key === "ArrowDown") pfocus++;
+    else if (e.key === "ArrowUp") pfocus = Math.max(pfocus - 1, 0);
+    else if (e.key === "Escape") return show("browser");
+    else return;
+    e.preventDefault(); renderPalette();
+  } else if (screen === "tracks" && e.key === "Escape") show("player");
+});
+
+function fit() {
+  const vp = document.getElementById("viewport"), st = document.getElementById("stage");
+  const s = Math.min(vp.clientWidth / 1920, vp.clientHeight / 1080);
+  st.style.transform = `scale(${s})`;
+  st.style.left = (vp.clientWidth - 1920 * s) / 2 + "px";
+  st.style.top = (vp.clientHeight - 1080 * s) / 2 + "px";
+}
+addEventListener("resize", fit);
+
+// URL hash: flat.html#screen,glyphs,theme  e.g. #player,ps,6
+const [hs, hg, ht] = location.hash.slice(1).split(",");
+let saved = 0; try { saved = +(localStorage.getItem("jimmy-theme") || 0); } catch (e) {}
+applyTheme(ht !== undefined && ht !== "" ? +ht - 1 : saved);
+renderRows(); setGlyph(GLYPHS[hg] ? hg : "xbox"); show(NOTES[hs] ? hs : "browser"); fit();
+</script>
+</body>
+</html>

@@ -1,0 +1,629 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jimmy TUI mockups</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@500&display=swap" rel="stylesheet">
+<style>
+:root { --mono: "IBM Plex Mono", ui-monospace, monospace; --accent: #ffb000; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: #000; }
+body { display: flex; flex-direction: column; overflow: hidden; font-family: var(--mono); }
+#review { flex: none; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px 16px;
+  background: #1f1f1f; border-bottom: 1px solid #333; font: 13px var(--mono); color: #aaa; }
+#review button, #review a { font: inherit; background: #2a2a2a; color: #ddd; border: 1px solid #444; padding: 5px 10px; cursor: pointer; text-decoration: none; }
+#review button.on { background: var(--accent); color: #000; border-color: var(--accent); }
+#review .sep { width: 1px; height: 22px; background: #444; margin: 0 6px; }
+#review .note { flex: 1 1 300px; color: #888; min-width: 0; }
+#viewport { flex: 1; position: relative; overflow: hidden; }
+canvas { position: absolute; image-rendering: auto; }
+</style>
+</head>
+<body>
+<div id="review">
+  <span>jimmy · TUI style</span><span class="sep"></span>
+  <button data-screen="browser">1 Browser</button>
+  <button data-screen="player">2 Player</button>
+  <button data-screen="tracks">3 Tracks</button>
+  <button data-screen="palette">4 Palette</button>
+  <button data-screen="settings">5 Controls</button>
+  <span class="sep"></span>
+  <button data-glyph="xbox">Xbox</button>
+  <button data-glyph="ps">PS5</button>
+  <button data-glyph="kb">Keyboard</button>
+  <span class="sep"></span>
+  <a href="index.html">Classic mockup ↗</a>
+  <span class="note" id="note"></span>
+</div>
+<div id="viewport"><canvas id="cv"></canvas></div>
+
+<script>
+/* =====================================================================
+   A tiny character-grid renderer. The real app would do the same thing
+   in egui: a fixed 128x40 cell grid, box-drawing and block characters
+   drawn as crisp rectangles (no font gaps), text drawn per cell.
+   ===================================================================== */
+const COLS = 128, ROWS = 40, CW = 15, CH = 27, W = COLS * CW, H = ROWS * CH;  // 1920x1080
+
+const T = {
+  bg: "#0c0c0c", fg: "#cfccc5", dim: "#7a7771", faint: "#45433f", line: "#4c4a46",
+  bar: "#181818", sel: "#ffb000", ink: "#0c0c0c", amber: "#ffb000", cyan: "#5fd7d7",
+  red: "#ff5f45", green: "#87d75f", blue: "#6f9bff", magenta: "#e48bd0", yellow: "#ffd75f",
+  hl: "#262420",
+};
+
+function Buffer() {
+  const n = COLS * ROWS;
+  return { ch: new Array(n).fill(null), fg: new Array(n).fill(T.fg), bg: new Array(n).fill(null),
+           b: new Array(n).fill(false), u: new Array(n).fill(false) };
+}
+let B;  // current buffer
+function put(x, y, c, fg, bg, bold, ul) {
+  if (x < 0 || y < 0 || x >= COLS || y >= ROWS) return;
+  const i = y * COLS + x;
+  B.ch[i] = c; if (fg) B.fg[i] = fg; if (bg != null) B.bg[i] = bg; B.b[i] = !!bold; B.u[i] = !!ul;
+}
+function text(x, y, s, fg = T.fg, bg, bold, max) {
+  const chars = Array.from(s); const n = max == null ? chars.length : Math.min(max, chars.length);
+  for (let i = 0; i < n; i++) put(x + i, y, chars[i], fg, bg, bold);
+  return n;
+}
+function rtext(xr, y, s, fg, bg, bold) { const n = Array.from(s).length; text(xr - n + 1, y, s, fg, bg, bold); return xr - n + 1; }
+function len(s) { return Array.from(s).length; }
+function pad(s, w, right) { s = String(s); const l = len(s); if (l >= w) return Array.from(s).slice(0, w).join(""); return right ? " ".repeat(w - l) + s : s + " ".repeat(w - l); }
+function fill(x, y, w, h, bg, c = " ", fg) { for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) put(x + i, y + j, c, fg, bg); }
+function hline(x, y, w, c = "─", fg = T.line) { for (let i = 0; i < w; i++) put(x + i, y, c, fg); }
+function box(x, y, w, h, o = {}) {
+  const fg = o.fg || T.line, d = o.double;
+  if (o.bg !== undefined) fill(x, y, w, h, o.bg);
+  const [tl, tr, bl, br, hz, vt] = d ? ["╔","╗","╚","╝","═","║"] : ["┌","┐","└","┘","─","│"];
+  put(x, y, tl, fg); put(x + w - 1, y, tr, fg); put(x, y + h - 1, bl, fg); put(x + w - 1, y + h - 1, br, fg);
+  for (let i = 1; i < w - 1; i++) { put(x + i, y, hz, fg); put(x + i, y + h - 1, hz, fg); }
+  for (let j = 1; j < h - 1; j++) { put(x, y + j, vt, fg); put(x + w - 1, y + j, vt, fg); }
+  if (o.title) {
+    put(x + 1, y, d ? "╡" : "┤", fg);
+    const n = text(x + 2, y, " " + o.title + " ", o.titleFg || fg, o.titleBg, true);
+    put(x + 2 + n, y, d ? "╞" : "├", fg);
+  }
+  if (o.right) { const s = " " + o.right + " "; put(x + w - 3 - len(s), y, "┤", fg); text(x + w - 2 - len(s), y, s, T.dim); put(x + w - 2, y, "├", fg); }
+}
+function sep(x, y, w, fg = T.line) { put(x, y, "├", fg); hline(x + 1, y, w - 2, "─", fg); put(x + w - 1, y, "┤", fg); }
+
+/* box-drawing: which arms each char has (1 light, 2 heavy) */
+const ARMS = {
+  "─":[1,1,0,0], "│":[0,0,1,1], "┌":[0,1,0,1], "┐":[1,0,0,1], "└":[0,1,1,0], "┘":[1,0,1,0],
+  "├":[0,1,1,1], "┤":[1,0,1,1], "┬":[1,1,0,1], "┴":[1,1,1,0], "┼":[1,1,1,1],
+  "━":[2,2,0,0], "┃":[0,0,2,2], "╸":[2,0,0,0], "╺":[0,2,0,0],
+};
+const DOUBLE = new Set(["═","║","╔","╗","╚","╝","╡","╞"]);
+const EIGHTHS = { "▏":1, "▎":2, "▍":3, "▌":4, "▋":5, "▊":6, "▉":7, "█":8 };
+const SHADE = { "░":.22, "▒":.45, "▓":.7 };
+
+let blinkOn = true;
+function drawBuffer(ctx, buf) {
+  // backgrounds
+  for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
+    const i = y * COLS + x;
+    if (buf.bg[i]) { ctx.fillStyle = buf.bg[i]; ctx.fillRect(x * CW, y * CH, CW + 0.5, CH + 0.5); }
+  }
+  ctx.textBaseline = "middle"; ctx.textAlign = "center";
+  for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
+    const i = y * COLS + x, c = buf.ch[i];
+    if (!c || c === " ") continue;
+    const px = x * CW, py = y * CH, cx = px + CW / 2, cy = py + CH / 2;
+    ctx.fillStyle = buf.fg[i];
+    if (ARMS[c]) {
+      const [l, r, u, d] = ARMS[c];
+      const t = (w) => (w === 2 ? 4 : 2);
+      if (l) ctx.fillRect(px, cy - t(l) / 2, CW / 2 + t(l) / 2, t(l));
+      if (r) ctx.fillRect(cx - t(r) / 2, cy - t(r) / 2, CW / 2 + t(r) / 2 + 0.5, t(r));
+      if (u) ctx.fillRect(cx - t(u) / 2, py, t(u), CH / 2 + t(u) / 2);
+      if (d) ctx.fillRect(cx - t(d) / 2, cy - t(d) / 2, t(d), CH / 2 + t(d) / 2 + 0.5);
+    } else if (DOUBLE.has(c)) {
+      const g = 3, s = 2, R = px + CW + 0.5, Bt = py + CH + 0.5;
+      const H_ = (x0, x1, yy) => ctx.fillRect(x0, yy - s / 2, x1 - x0, s);
+      const V_ = (y0, y1, xx) => ctx.fillRect(xx - s / 2, y0, s, y1 - y0);
+      if (c === "═") { H_(px, R, cy - g); H_(px, R, cy + g); }
+      if (c === "║") { V_(py, Bt, cx - g); V_(py, Bt, cx + g); }
+      if (c === "╔") { H_(cx - g, R, cy - g); V_(cy - g, Bt, cx - g); H_(cx + g, R, cy + g); V_(cy + g, Bt, cx + g); }
+      if (c === "╗") { H_(px, cx + g, cy - g); V_(cy - g, Bt, cx + g); H_(px, cx - g, cy + g); V_(cy + g, Bt, cx - g); }
+      if (c === "╚") { H_(cx - g, R, cy + g); V_(py, cy + g, cx - g); H_(cx + g, R, cy - g); V_(py, cy - g, cx + g); }
+      if (c === "╝") { H_(px, cx + g, cy + g); V_(py, cy + g, cx + g); H_(px, cx - g, cy - g); V_(py, cy - g, cx - g); }
+      if (c === "╡") { V_(py, Bt, cx); H_(px, cx, cy - g); H_(px, cx, cy + g); }
+      if (c === "╞") { V_(py, Bt, cx); H_(cx, R, cy - g); H_(cx, R, cy + g); }
+    } else if (EIGHTHS[c]) {
+      ctx.fillRect(px, py + 3, CW * EIGHTHS[c] / 8 + 0.5, CH - 6);
+    } else if (SHADE[c]) {
+      ctx.globalAlpha = SHADE[c]; ctx.fillRect(px, py + 3, CW + 0.5, CH - 6); ctx.globalAlpha = 1;
+    } else if (c === "▐") { ctx.fillRect(cx, py + 3, CW / 2 + 0.5, CH - 6);
+    } else if (c === "▔") { ctx.fillRect(px, py, CW + 0.5, 3);
+    } else if (c === "┄") { for (let k = 0; k < 3; k++) ctx.fillRect(px + k * 5 + 1, cy - 1, 3, 2);
+    } else if (c === "┆") { for (let k = 0; k < 3; k++) ctx.fillRect(cx - 1, py + k * 9 + 2, 2, 5);
+    } else {
+      ctx.font = `${buf.b[i] ? 600 : 400} 24px "IBM Plex Mono", monospace`;
+      ctx.fillText(c, cx, cy + 1);
+      if (buf.u[i]) ctx.fillRect(px, py + CH - 5, CW + 0.5, 2);
+    }
+  }
+}
+
+/* ================== glyph sets & hints ================== */
+const GLY = {
+  xbox: { a:["A",T.green], b:["B",T.red], x:["X",T.blue], y:["Y",T.yellow], lb:["LB"], rb:["RB"], lt:["LT"], rt:["RT"],
+          lr:["◀▶"], ud:["▲▼"], menu:["≡"], view:["⧉"], rsud:["RS▲▼"], rsup:["RS▲"], rsdown:["RS▼"], lslr:["LS◀▶"] },
+  ps:   { a:["✕",T.blue], b:["○",T.red], x:["□",T.magenta], y:["△",T.green], lb:["L1"], rb:["R1"], lt:["L2"], rt:["R2"],
+          lr:["◀▶"], ud:["▲▼"], menu:["≡"], view:["⧉"], rsud:["RS▲▼"], rsup:["RS▲"], rsdown:["RS▼"], lslr:["LS◀▶"] },
+  kb:   { a:["Enter"], b:["Esc"], x:["Tab"], y:["^P"], lb:["["], rb:["]"], lt:["S-←"], rt:["S-→"],
+          lr:["←→"], ud:["↑↓"], menu:["T"], view:["F"], rsud:["PgUp/Dn"], rsup:["PgUp"], rsdown:["PgDn"], lslr:["←→"] },
+};
+const KBO = { player: { a: "Space", x: "J", y: "#" } };
+const PAD = { xbox: "XBOX CONTROLLER", ps: "DUALSENSE", kb: "KEYBOARD" };
+let gs = "xbox", screen = "browser";
+function gl(key, ctx) {
+  let [t, c] = GLY[gs][key] || [key];
+  if (gs === "kb" && KBO[ctx] && KBO[ctx][key]) t = KBO[ctx][key];
+  return [t, c];
+}
+/* chip = key cap drawn as inverse cells: " A " */
+function chip(x, y, key, ctx, invert) {
+  const [t, c] = gl(key, ctx);
+  const s = " " + t + " ";
+  if (invert) return text(x, y, s, T.ink, null, true);
+  return text(x, y, s, T.ink, c || T.dim, true);
+}
+const HINTS = {
+  browser: [["a","Play"],["b","Back"],["x","Options"],["y","Commands"],["menu","Settings"],["view","Fullscreen"]],
+  player:  [["a","Pause"],["lr","Seek"],["ud","Volume"],["rsud","Brightness"],["x","Subs"],["y","Audio"],["menu","Tracks"],["b","Back"]],
+  tracks:  [["a","Select"],["lr","Adjust"],["lb",""],["rb","Tab"],["b","Close"]],
+  palette: [["ud","Move"],["a","Run"],["b","Close"]],
+  settings:[["a","Rebind"],["x","Clear"],["lb",""],["rb","Gamepad/Keyboard"],["b","Back"]],
+};
+function keybar(ctxName) {
+  fill(0, 39, COLS, 1, T.bar);
+  let x = 1;
+  for (const [k, label] of HINTS[ctxName]) {
+    x += chip(x, 39, k, ctxName === "player" || ctxName === "tracks" ? "player" : "");
+    if (label) { x += text(x, 39, " " + label, T.fg, T.bar); x += 3; } else x += 1;
+  }
+  rtext(126, 39, "mouse ✓  ?:help", T.dim, T.bar);
+}
+function titlebar(crumbs, bg = T.bar) {
+  fill(0, 0, COLS, 1, bg);
+  text(0, 0, " jimmy ", T.ink, T.amber, true);
+  let x = 8;
+  crumbs.forEach((c, i) => {
+    const last = i === crumbs.length - 1;
+    x += text(x, 0, (i ? " / " : " ") + c, last ? T.fg : T.dim, bg, last);
+  });
+  const xr = rtext(126, 0, "21:04", T.fg, bg);
+  const p = rtext(xr - 4, 0, PAD[gs], T.dim, bg);
+  put(xr - 2, 0, "│", T.line, bg);
+  put(p - 2, 0, "●", T.green, bg);
+}
+function modeline(mode, color, left, right) {
+  fill(0, 38, COLS, 1, "#141414");
+  const n = text(0, 38, " " + mode + " ", T.ink, color, true);
+  text(n + 1, 38, left, T.fg, "#141414");
+  if (right) rtext(126, 38, right, T.dim, "#141414");
+}
+
+/* ================== data ================== */
+const FILES = [
+  { dir:true, name:"Collections", count:"14 items" },
+  { dir:true, name:"Criterion", count:"32 items" },
+  { name:"Alien (1979).mkv", size:"12.4G", len:"1:57:04", prog:1, subs:"en.srt", mod:"2024-03-02" },
+  { name:"Arrival (2016).mkv", size:"8.1G", len:"1:56:10", prog:.18, subs:"—", mod:"2024-06-11", pos:"0:21:02" },
+  { name:"Heat (1995).avi", size:"1.4G", len:null, prog:0, subs:"—", mod:"2019-11-30" },
+  { name:"In the Mood for Love (2000).mkv", size:"6.7G", len:null, prog:0, subs:"en.srt zh.srt", mod:"2023-01-08" },
+  { name:"Moon (2009).mp4", size:"2.2G", len:"1:37:12", prog:1, subs:"embedded", mod:"2022-08-19" },
+  { name:"Paris, Texas (1984).mkv", size:"9.9G", len:null, prog:0, subs:"en.srt", mod:"2025-02-14" },
+  { name:"The Long Way Home (2019).mkv", size:"7.3G", len:"1:53:53", prog:.637, subs:"en.srt es.srt", mod:"2025-10-29", pos:"1:12:33" },
+  { name:"The Third Man (1949).mkv", size:"4.0G", len:null, prog:0, subs:"en.srt", mod:"2021-05-03" },
+  { name:"Wild Strawberries (1957).mkv", size:"5.5G", len:null, prog:0, subs:"—", mod:"2023-09-21" },
+];
+let focus = 8;
+function bar(x, y, w, frac, fg, rest = T.faint) {  // [█████▌░░░]
+  const cells = frac * w, full = Math.floor(cells), part = Math.round((cells - full) * 8);
+  for (let i = 0; i < w; i++) {
+    if (i < full) put(x + i, y, "█", fg);
+    else if (i === full && part) put(x + i, y, ["", "▏","▎","▍","▌","▋","▊","▉"][part], fg);
+    else put(x + i, y, "░", rest);
+  }
+}
+function wrap(s, w) {
+  const out = []; let line = "";
+  for (const word of s.split(" ")) {
+    if (len(line) + len(word) + (line ? 1 : 0) > w) { out.push(line); line = word; } else line += (line ? " " : "") + word;
+  }
+  if (line) out.push(line); return out;
+}
+
+/* ================== screens ================== */
+function drawBrowser(focused = true) {
+  titlebar(["/mnt/media", "Movies"]);
+  // sidebar
+  box(0, 1, 26, 37, { title: "Library", fg: T.line, titleFg: T.dim });
+  text(2, 3, "LIBRARY", T.faint, null, true);
+  const side = [["▶","Continue watching","3"],["◷","Recently played",""],null,["FOLDERS"],
+    ["▤","Movies","11",true],["▤","TV Shows","24"],["▤","Downloads","7"],["⏏","USB BACKUP-2TB",""]];
+  let y = 4;
+  for (const s of side) {
+    if (!s) { y++; continue; }
+    if (s.length === 1) { text(2, y++, s[0], T.faint, null, true); continue; }
+    const [ic, name, n, act] = s;
+    if (act) { fill(1, y, 24, 1, T.hl); put(1, y, "▌", T.amber); }
+    text(3, y, ic, act ? T.amber : T.dim); text(5, y, name, act ? T.amber : T.fg, null, act);
+    if (n) rtext(23, y, n, T.dim);
+    y++;
+  }
+  text(3, 35, "⚙", T.dim); text(5, 35, "Settings", T.fg);
+  rtext(23, 35, gl("menu")[0], T.dim);
+
+  // list
+  const lx = 26, lw = 68;
+  box(lx, 1, lw, 37, { title: "Movies", fg: focused ? T.amber : T.line, titleFg: focused ? T.amber : T.dim, right: "/mnt/media/Movies" });
+  text(lx + 2, 2, "/", T.amber, null, true); text(lx + 4, 2, "type to filter", T.faint);
+  if (blinkOn && focused) put(lx + 4 + 14, 2, "▏", T.amber);
+  rtext(lx + lw - 3, 2, "11 items · sort name ↑", T.dim);
+  sep(lx, 3, lw, focused ? T.amber : T.line);
+  const cName = lx + 4, cProg = lx + 36, cLen = lx + 51, cSize = lx + 61;
+  text(cName, 4, "NAME", T.dim, null, true); text(cProg, 4, "PROGRESS", T.dim, null, true);
+  rtext(cLen + 7, 4, "LENGTH", T.dim, null, true); rtext(cSize + 4, 4, "SIZE", T.dim, null, true);
+  FILES.forEach((f, i) => {
+    const ry = 5 + i, sel = i === focus;
+    const fg = sel ? T.ink : (f.prog === 1 ? T.dim : T.fg), bg = sel ? T.sel : null;
+    if (sel) fill(lx + 1, ry, lw - 2, 1, T.sel);
+    text(lx + 2, ry, f.dir ? "▸" : (f.prog === 1 ? "✓" : f.prog > 0 ? "◐" : " "), sel ? T.ink : (f.dir ? T.amber : f.prog === 1 ? T.green : T.amber), bg, true);
+    text(cName, ry, pad(f.dir ? f.name + "/" : f.name, 31), fg, bg, f.dir || sel);
+    if (f.dir) { rtext(cSize + 4, ry, f.count, sel ? T.ink : T.dim, bg); return; }
+    if (f.prog === 1) text(cProg, ry, "watched", sel ? T.ink : T.green, bg);
+    else if (f.prog > 0) { bar(cProg, ry, 10, f.prog, sel ? T.ink : T.amber, sel ? "rgba(0,0,0,.6)" : T.faint);
+      text(cProg + 11, ry, Math.round(f.prog * 100) + "%", sel ? T.ink : T.dim, bg); }
+    rtext(cLen + 7, ry, f.len || "--:--:--", sel ? T.ink : (f.len ? T.fg : T.faint), bg);
+    rtext(cSize + 4, ry, f.size, sel ? T.ink : T.dim, bg);
+  });
+  for (let ry = 5 + FILES.length; ry < 37; ry++) put(lx + 2, ry, "~", T.faint);
+
+  // info
+  const ix = 94, iw = 34, f = FILES[focus];
+  box(ix, 1, iw, 37, { title: "Info", fg: T.line, titleFg: T.dim });
+  let iy = 3;
+  const title = f.dir ? f.name + "/" : f.name.replace(/\.[^.]+$/, "");
+  for (const l of wrap(title, iw - 4)) text(ix + 2, iy++, l, T.fg, null, true);
+  iy++;
+  const kv = (k, v, c = T.fg) => { text(ix + 2, iy, pad(k, 11), T.dim); text(ix + 13, iy++, len(v) > iw - 15 ? Array.from(v).slice(0, iw - 16).join("") + "…" : v, c); };
+  if (f.dir) { kv("contains", f.count); kv("path", "…/Movies/" + f.name, T.dim); }
+  else {
+    kv("file", f.name, T.dim); kv("size", f.size.replace("G", " GB")); kv("container", f.name.split(".").pop().toUpperCase());
+    kv("modified", f.mod); kv("length", f.len || "after first play", f.len ? T.fg : T.faint);
+    kv("subtitles", f.subs); if (f.pos) kv("stopped at", f.pos, T.amber);
+    if (!f.len) {
+      iy++;
+      const lines = wrap("Not played yet. jimmy doesn't open files just to list them, so slow disks stay fast.", iw - 8);
+      const bh = lines.length + 2;
+      for (let j = 0; j < bh; j++) { put(ix + 2, iy + j, j === 0 || j === bh - 1 ? " " : "┆", T.faint); }
+      hline(ix + 2, iy, iw - 4, "┄", T.faint); hline(ix + 2, iy + bh - 1, iw - 4, "┄", T.faint);
+      lines.forEach((l, j) => text(ix + 4, iy + 1 + j, l, T.dim));
+    }
+  }
+  // actions
+  const acts = f.dir ? [["Open folder","a"],["Play all","x"]] : f.pos ? [["▶ Resume " + f.pos,"a"],["↺ From start","x"]] : [["▶ Play","a"],["Options","x"]];
+  sep(ix, 33, iw);
+  acts.forEach(([label, k], j) => {
+    const ay = 34 + j * 2;
+    if (j === 0) fill(ix + 2, ay, iw - 4, 1, T.hl);
+    text(ix + 3, ay, label, j === 0 ? T.amber : T.fg, null, j === 0);
+    const [t] = gl(k, "browser"); rtext(ix + iw - 3, ay, "‹" + t + "›", T.dim);
+  });
+  modeline("BROWSE", T.cyan, "Movies  ·  9/11  ·  The Long Way Home (2019).mkv", "disk idle · cache warm");
+  keybar("browser");
+}
+
+let vol = 145, bright = 60, hud = "vol", paused = false;
+function drawPlayer(withPanel) {
+  titlebar(["Movies", "The Long Way Home (2019).mkv"], "rgba(12,12,12,.85)");
+  if (!withPanel) {
+    // bottom OSD panel
+    const by = 33, bh = 5, bg = "rgba(12,12,12,.88)";
+    box(0, by, COLS, bh, { bg, fg: T.line, title: "The Long Way Home (2019)", titleFg: T.amber, right: "MKV · H.264 1080p · AC3 5.1 · hw:vaapi" });
+    // seek bar 100 cells, x = 14..113
+    const sx = 14, sw = 100, played = .637, buf = .675, chaps = [.11, .29, .47, .63, .84];
+    chaps.forEach((c, i) => { const cx = sx + Math.round(c * sw); put(cx, by + 1, "▾", i === 3 ? T.amber : T.dim); });
+    text(sx + 2, by + 1, "ch 4/6 · The Crossing", T.dim);
+    const ph = sx + Math.floor(played * sw);
+    for (let i = 0; i < sw; i++) {
+      const fr = i / sw;
+      put(sx + i, by + 2, fr < played ? "█" : fr < buf ? "▒" : "░", fr < played ? T.amber : fr < buf ? T.fg : T.dim);
+    }
+    put(ph, by + 2, "█", "#ffffff");
+    text(2, by + 2, "01:12:33", T.fg, null, true);
+    rtext(125, by + 2, "−00:41:20", T.dim);
+    text(sx, by + 3, "▲ cached ahead: 48 s", T.faint);
+    rtext(sx + sw - 1, by + 3, "total 1:53:53 · ends 21:45", T.dim);
+
+    // HUD
+    const hx = 36, hy = 3, hw = 56;
+    if (hud === "vol") {
+      const sys = Math.min(vol, 100), boost = Math.max(vol - 100, 0);
+      box(hx, hy, hw, 5, { bg: "rgba(12,12,12,.94)", fg: boost ? T.red : T.line, title: "Volume", titleFg: boost ? T.red : T.fg });
+      const bx = hx + 2, bw = 40; // 0..200 in 40 cells (5% each)
+      for (let i = 0; i < bw; i++) {
+        const v = (i + 1) * 5;
+        if (i === 20) { put(bx + i, hy + 2, "│", "#ffffff"); }
+        const c = bx + i + (i >= 20 ? 1 : 0);
+        if (v <= vol) put(c, hy + 2, v <= 100 ? "█" : "▓", v <= 100 ? T.amber : T.red);
+        else put(c, hy + 2, "·", T.faint);
+      }
+      rtext(hx + hw - 3, hy + 2, vol + "%", boost ? T.red : T.fg, null, true);
+      text(bx, hy + 3, "system " + sys + "%", T.dim);
+      text(bx + 21, hy + 3, boost ? "boost +" + boost + "% · jimmy only" : "0      100      200", boost ? T.red : T.faint);
+    } else {
+      box(hx, hy, hw, 5, { bg: "rgba(12,12,12,.94)", fg: T.line, title: "Brightness · backlight", titleFg: T.fg });
+      bar(hx + 2, hy + 2, 40, bright / 100, T.fg, T.faint);
+      rtext(hx + hw - 3, hy + 2, bright + "%", T.fg, null, true);
+      text(hx + 2, hy + 3, "system setting (GNOME)", T.dim);
+    }
+    modeline(paused ? "PAUSED" : "PLAYING", paused ? T.dim : T.amber,
+      `1.00×   vol ${vol}%${vol > 100 ? " (boost)" : ""}   sub: en · SRT   aud: en · 5.1 AC3   bright ${bright}%`, "cache 48s ▕████▏ · drops 0");
+  } else {
+    modeline("TRACKS", T.magenta, "paused · choose subtitle and audio tracks", "1:12:33 / 1:53:53");
+  }
+  keybar(withPanel ? "tracks" : "player");
+}
+
+function drawTracks() {
+  const px = 74, pw = 54, bg = T.bg;
+  box(px, 1, pw, 37, { bg, fg: T.amber, title: "Tracks", titleFg: T.amber });
+  // tabs
+  let x = px + 2;
+  x += chip(x, 2, "lb", "player") + 2;
+  [["SUBTITLES", true], ["AUDIO"], ["VIDEO"]].forEach(([t, on]) => {
+    x += text(x, 2, on ? "[" + t + "]" : " " + t + " ", on ? T.amber : T.dim, null, on) + 2;
+  });
+  rtext(px + pw - 3 - 0, 2, " " + gl("rb", "player")[0] + " ", T.ink, T.dim, true);
+  sep(px, 3, pw, T.amber);
+  text(px + 2, 5, "TRACK", T.faint, null, true);
+  const opts = [["Off",""],["English","SRT · external",true,true],["English SDH","PGS · embedded"],["Español","ASS · embedded"],["Closed captions","EIA-608"],["Load from file…","browse",false,false,true]];
+  opts.forEach(([name, meta, sel, foc, load], i) => {
+    const y = 6 + i;
+    if (foc) fill(px + 1, y, pw - 2, 1, T.sel);
+    const fg = foc ? T.ink : T.fg, b = foc ? T.sel : null;
+    text(px + 3, y, load ? "[+]" : sel ? "(•)" : "( )", foc ? T.ink : sel ? T.amber : T.dim, b, true);
+    text(px + 7, y, name, fg, b, foc);
+    rtext(px + pw - 3, y, meta, foc ? T.ink : T.dim, b);
+  });
+  text(px + 2, 13, "ADJUST", T.faint, null, true);
+  [["Delay","−0.20 s"],["Size","110%"],["Position","bottom"],["Background","box"],["Font","Plex Sans"]].forEach(([k, v], i) => {
+    const y = 14 + i;
+    text(px + 3, y, k, T.fg);
+    const vx = px + pw - 18;
+    text(vx, y, "<", T.dim); text(vx + 2, y, pad(v, 11), T.fg); text(vx + 14, y, ">", T.dim);
+  });
+  sep(px, 20, pw);
+  text(px + 2, 21, "PREVIEW", T.faint, null, true);
+  text(px + 3, 22, "sub-auto=fuzzy · 2 sidecar files found", T.dim);
+  text(px + 3, 23, "last used: English (remembered per file)", T.dim);
+}
+
+/* ---------- palette ---------- */
+const CMDS = [
+  ["Subtitles","Next subtitle track","x","J"], ["Subtitles","Subtitles off",null,"S-J"],
+  ["Subtitles","Subtitle delay +0.1 s",null,"Z"], ["Subtitles","Subtitle delay −0.1 s",null,"S-Z"],
+  ["Subtitles","Subtitle size bigger",null,"A-="], ["Subtitles","Load subtitle file…",null,null],
+  ["Audio","Next audio track","y","#"], ["Audio","Volume up","ud","↑"], ["Audio","Volume down","ud","↓"],
+  ["Audio","Mute",null,"M"], ["Display","Brightness up","rsup","PgUp"], ["Display","Brightness down","rsdown","PgDn"],
+  ["Display","Toggle fullscreen","view","F"], ["Playback","Play / Pause","a","Space"],
+  ["Playback","Rescue mode (slow CPU)",null,"^R"], ["Playback","Speed 1.25×",null,"]"],
+  ["Go to","Movies",null,null], ["Go to","TV Shows",null,null], ["Go to","Continue watching",null,null],
+  ["App","Settings: Controls","menu",","],
+];
+let query = "sub", pfocus = 0;
+function match(str, q) {
+  const lower = str.toLowerCase(), out = new Set();
+  for (const w of q.toLowerCase().split(/\s+/).filter(Boolean)) {
+    const i = lower.indexOf(w); if (i < 0) return null;
+    for (let k = i; k < i + w.length; k++) out.add(k);
+  }
+  return out;
+}
+function drawPalette() {
+  const px = 20, pw = 88, py = 3, ph = 18;
+  box(px, py, pw, ph, { bg: "#101010", fg: T.amber, double: true, title: "Command palette", titleFg: T.amber });
+  text(px + 2, py + 1, ">", T.amber, null, true);
+  const n = text(px + 4, py + 1, query, T.fg, null, true);
+  if (blinkOn) put(px + 4 + n, py + 1, "█", T.amber);
+  const res = CMDS.map(c => ({ c, m: query.trim() ? match(c[0] + " " + c[1], query) : new Set() })).filter(r => r.m);
+  pfocus = Math.min(pfocus, Math.max(res.length - 1, 0));
+  rtext(px + pw - 3, py + 1, `${res.length}/${CMDS.length}`, T.dim);
+  hline(px + 1, py + 2, pw - 2, "─", T.line);
+  res.slice(0, 11).forEach((r, i) => {
+    const y = py + 3 + i, foc = i === pfocus, [cat, name, padKey, kb] = r.c;
+    const b = foc ? T.sel : null;
+    if (foc) fill(px + 1, y, pw - 2, 1, T.sel);
+    text(px + 3, y, pad(cat.toUpperCase(), 11), foc ? T.ink : T.cyan, b);
+    const off = cat.length + 1;
+    Array.from(name).forEach((ch, k) => {
+      const hit = r.m.has(k + off);
+      put(px + 15 + k, y, ch, foc ? T.ink : hit ? T.amber : T.fg, b, hit, hit);
+    });
+    let rx = px + pw - 3;
+    if (padKey && gs !== "kb") { const [t, c] = gl(padKey, "player"); rx = rtext(rx, y, " " + t + " ", foc ? (c || T.amber) : T.ink, foc ? T.ink : (c || T.dim), true) - 2; }
+    if (kb) rtext(rx, y, " " + kb + " ", foc ? T.amber : T.fg, foc ? T.ink : "#2a2a2a");
+  });
+  if (!res.length) text(px + 3, py + 3, "no matching command", T.dim);
+  hline(px + 1, py + ph - 3, pw - 2, "─", T.line);
+  let x = px + 2;
+  for (const [k, l] of HINTS.palette) { x += chip(x, py + ph - 2, k, ""); x += text(x, py + ph - 2, " " + l + " ", T.fg) + 1; }
+  rtext(px + pw - 3, py + ph - 2, " fuzzy · recent first ", T.dim, "#101010");
+}
+
+/* ---------- settings ---------- */
+const BINDS = [
+  ["Play / Pause","player","a",null], ["Seek −10 s / +10 s","player","lr","lslr"],
+  ["Seek −60 s / +60 s","player","lb","rb"], ["Scrub (hold, analog)","player","lt","rt"],
+  ["Volume up / down","player","ud",null], ["Brightness up","player","LISTEN",null],
+  ["Brightness down","player","rsdown",null], ["Next subtitle track","player","x",null],
+  ["Next audio track","player","y",null], ["Command palette","browser","y",null],
+  ["Toggle fullscreen","global","view",null], ["Back","global","b",null],
+];
+function drawSettings() {
+  titlebar(["Settings", "Controls"]);
+  box(0, 1, 26, 37, { title: "Settings", fg: T.line, titleFg: T.dim });
+  ["General","Library","Playback","Subtitles","Volume & brightness","Controls","About"].forEach((s, i) => {
+    const y = 3 + i, act = s === "Controls";
+    if (act) { fill(1, y, 24, 1, T.hl); put(1, y, "▌", T.amber); }
+    text(3, y, s, act ? T.amber : T.fg, null, act);
+  });
+  const cx = 26, cw = 102;
+  box(cx, 1, cw, 37, { title: "Controls", fg: T.amber, titleFg: T.amber, right: "~/.config/jimmy/bindings.toml" });
+  let x = cx + 2;
+  x += text(x, 2, gs !== "kb" ? "[GAMEPAD]" : " GAMEPAD ", gs !== "kb" ? T.amber : T.dim, null, gs !== "kb") + 2;
+  x += text(x, 2, gs === "kb" ? "[KEYBOARD]" : " KEYBOARD ", gs === "kb" ? T.amber : T.dim, null, gs === "kb") + 3;
+  x += chip(x, 2, "lb", ""); x += 1; x += chip(x, 2, "rb", ""); text(x + 1, 2, "switch", T.dim);
+  sep(cx, 3, cw, T.amber);
+  // banner
+  box(cx + 2, 4, cw - 4, 3, { fg: T.amber });
+  if (blinkOn) put(cx + 4, 5, "█", T.amber);
+  text(cx + 6, 5, "Rebinding ", T.fg); text(cx + 16, 5, "Brightness up", T.amber, null, true);
+  text(cx + 30, 5, gs === "kb" ? "— press a key" : "— press a button or move a stick", T.fg);
+  let bx = cx + cw - 5;
+  bx = rtext(bx, 5, "hold to clear", T.dim) - 1; bx -= len(gl("menu")[0]) + 2; chip(bx, 5, "menu", "");
+  bx = rtext(bx - 3, 5, "cancel", T.dim) - 1; bx -= len(gl("b")[0]) + 2; chip(bx, 5, "b", "");
+  // table
+  const tx = cx + 2, cols = [38, 12, 20, 20], tw = cols.reduce((a, b) => a + b, 0) + cols.length + 1;
+  const edges = [tx]; cols.forEach(c => edges.push(edges[edges.length - 1] + c + 1));
+  const rule = (y, l, m, r) => { hline(tx, y, tw, "─"); put(tx, y, l); edges.slice(1, -1).forEach(e => put(e, y, m)); put(edges[edges.length - 1], y, r); };
+  const verts = (y) => edges.forEach(e => put(e, y, "│", T.line));
+  rule(8, "┌", "┬", "┐"); verts(9);
+  ["ACTION","CONTEXT", gs === "kb" ? "KEY" : "BUTTON","ALTERNATE"].forEach((h, i) => text(edges[i] + 2, 9, h, T.dim, null, true));
+  rule(10, "├", "┼", "┤");
+  BINDS.forEach(([act, ctx, k1, k2], i) => {
+    const y = 11 + i, listen = k1 === "LISTEN";
+    if (listen) fill(tx + 1, y, tw - 2, 1, T.hl);
+    verts(y);
+    if (listen) put(tx + 1, y, "▸", T.amber);
+    text(edges[0] + 2, y, act, listen ? T.amber : T.fg, null, listen);
+    text(edges[1] + 2, y, ctx, T.dim);
+    if (listen) text(edges[2] + 1, y, blinkOn ? (gs === "kb" ? " press a key…     " : " press a button…  ") : "                  ", T.ink, blinkOn ? T.amber : null, true);
+    else chip(edges[2] + 2, y, k1, ctx);
+    if (k2) chip(edges[3] + 2, y, k2, ctx); else text(edges[3] + 2, y, "—", T.faint);
+  });
+  rule(11 + BINDS.length, "└", "┴", "┘");
+  // conflict note
+  const ny = 13 + BINDS.length;
+  text(tx, ny, "!", T.yellow, null, true);
+  text(tx + 2, ny, `${gl("y")[0]} is used twice, but in different contexts (player / browser), so that's allowed.`, T.dim);
+  // form
+  const fy = ny + 2;
+  text(tx, fy, "TUNING", T.faint, null, true);
+  [["Stick deadzone","15%"],["Repeat delay","350 ms"],["Trigger scrub speed","up to 8×"],["Button style","auto"]].forEach(([k, v], i) => {
+    const fx = tx + (i % 2) * 50, y = fy + 1 + Math.floor(i / 2);
+    text(fx, y, k, T.fg);
+    text(fx + 26, y, "<", T.dim); text(fx + 28, y, pad(v, 12), T.fg); text(fx + 41, y, ">", T.dim);
+  });
+  modeline("SETTINGS", T.green, "Controls · 12 actions · changes save immediately", "bindings.toml");
+  keybar("settings");
+}
+
+/* ================== scene (stand-in for video) ================== */
+function drawScene(ctx) {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, "#1d2440"); g.addColorStop(.38, "#5a3a5c"); g.addColorStop(.62, "#c86a4a"); g.addColorStop(.72, "#f0a457");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = "#ffd08a"; ctx.beginPath(); ctx.arc(1290, 670, 110, 0, Math.PI * 2); ctx.fill();
+  const poly = (pts, col) => { ctx.fillStyle = col; ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x * W, y * H) : ctx.moveTo(x * W, y * H)); ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.fill(); };
+  poly([[0,.74],[.14,.66],[.28,.71],[.44,.62],[.58,.70],[.74,.64],[.88,.70],[1,.66]], "#1b1316");
+  poly([[0,.84],[.2,.78],[.38,.86],[.6,.80],[.8,.88],[1,.82]], "#0c0809");
+  // subtitle (rendered by mpv, so it keeps a normal font)
+  ctx.font = '500 44px "IBM Plex Sans", sans-serif'; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  const s = "We should have left before the snow came.", tw = ctx.measureText(s).width;
+  ctx.fillStyle = "rgba(0,0,0,.72)"; ctx.fillRect(W / 2 - tw / 2 - 18, 790, tw + 36, 64);
+  ctx.fillStyle = "#fff"; ctx.fillText(s, W / 2, 823);
+}
+
+/* ================== compose ================== */
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+let scale = 1;
+function render() {
+  const dpr = devicePixelRatio || 1;
+  ctx.setTransform(scale * dpr, 0, 0, scale * dpr, 0, 0);
+  ctx.fillStyle = T.bg; ctx.fillRect(0, 0, W, H);
+  const layer = (fn) => { B = Buffer(); fn(); drawBuffer(ctx, B); };
+  const dim = () => { ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(0, 0, W, H); };
+  if (screen === "browser") layer(() => drawBrowser(true));
+  if (screen === "palette") { layer(() => drawBrowser(false)); dim(); layer(drawPalette); }
+  if (screen === "player") { drawScene(ctx); layer(() => drawPlayer(false)); }
+  if (screen === "tracks") { drawScene(ctx); dim(); layer(() => { drawPlayer(true); drawTracks(); }); }
+  if (screen === "settings") layer(drawSettings);
+}
+function fit() {
+  const vp = document.getElementById("viewport"), dpr = devicePixelRatio || 1;
+  scale = Math.min(vp.clientWidth / W, vp.clientHeight / H);
+  const w = W * scale, h = H * scale;
+  cv.style.width = w + "px"; cv.style.height = h + "px";
+  cv.style.left = (vp.clientWidth - w) / 2 + "px"; cv.style.top = (vp.clientHeight - h) / 2 + "px";
+  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  render();
+}
+
+const NOTES = {
+  browser: "↑/↓ moves the selection, Enter plays. Everything sits on a 128×40 character grid; boxes are drawn as crisp lines, not font glyphs.",
+  player: "↑/↓ volume (past 100% turns red: boost), PgUp/PgDn brightness, Space pause, T tracks. ▒ = data already read ahead from disk.",
+  tracks: "Tracks panel over the paused video. Subtitles stay in a normal font because mpv draws them.",
+  palette: "Type to filter (Backspace to delete), ↑/↓ to move, Esc to close. Matches are underlined in amber.",
+  settings: "Remap screen, one action listening for input. Switch to Keyboard to see the keyboard tab.",
+};
+function show(s) {
+  screen = s;
+  if (s === "tracks") paused = true; if (s === "player") paused = false;
+  document.querySelectorAll("[data-screen]").forEach(b => b.classList.toggle("on", b.dataset.screen === s));
+  document.getElementById("note").textContent = NOTES[s];
+  render();
+}
+function setGlyph(g) { gs = g; document.querySelectorAll("[data-glyph]").forEach(b => b.classList.toggle("on", b.dataset.glyph === g)); render(); }
+document.querySelectorAll("[data-screen]").forEach(b => b.onclick = () => show(b.dataset.screen));
+document.querySelectorAll("[data-glyph]").forEach(b => b.onclick = () => setGlyph(b.dataset.glyph));
+
+document.addEventListener("keydown", e => {
+  if (screen === "palette") {
+    if (e.key === "Escape") return show("browser");
+    if (e.key === "ArrowDown") pfocus++;
+    else if (e.key === "ArrowUp") pfocus = Math.max(0, pfocus - 1);
+    else if (e.key === "Backspace") { query = query.slice(0, -1); pfocus = 0; }
+    else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) { query += e.key; pfocus = 0; }
+    else return;
+    e.preventDefault(); return render();
+  }
+  if (/^[1-5]$/.test(e.key)) return show(["browser","player","tracks","palette","settings"][+e.key - 1]);
+  if (screen === "browser") {
+    if (e.key === "ArrowDown") focus = Math.min(focus + 1, FILES.length - 1);
+    else if (e.key === "ArrowUp") focus = Math.max(focus - 1, 0);
+    else if (e.key === "Enter" && !FILES[focus].dir) return show("player");
+    else if ((e.ctrlKey || e.metaKey) && e.key === "p") { e.preventDefault(); return show("palette"); }
+    else return;
+  } else if (screen === "player") {
+    if (e.key === "ArrowUp") { vol = Math.min(vol + 5, 200); hud = "vol"; }
+    else if (e.key === "ArrowDown") { vol = Math.max(vol - 5, 0); hud = "vol"; }
+    else if (e.key === "PageUp") { bright = Math.min(bright + 5, 100); hud = "bright"; }
+    else if (e.key === "PageDown") { bright = Math.max(bright - 5, 5); hud = "bright"; }
+    else if (e.key === " ") paused = !paused;
+    else if (e.key === "Escape") return show("browser");
+    else if (e.key === "t") return show("tracks");
+    else return;
+  } else if (screen === "tracks") { if (e.key === "Escape") return show("player"); return; }
+  else return;
+  e.preventDefault(); render();
+});
+addEventListener("resize", fit);
+setInterval(() => { blinkOn = !blinkOn; if (screen !== "player") render(); }, 530);
+
+document.fonts.load('24px "IBM Plex Mono"').then(() => document.fonts.load('600 24px "IBM Plex Mono"'))
+  .then(() => document.fonts.load('500 44px "IBM Plex Sans"')).finally(() => {
+    const [s, g] = location.hash.slice(1).split(",");   // e.g. tui.html#player,ps
+    setGlyph(GLY[g] ? g : "xbox"); show(NOTES[s] ? s : "browser"); fit();
+  });
+</script>
+</body>
+</html>
