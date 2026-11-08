@@ -48,7 +48,10 @@ impl App {
         let pal = self.pal;
         let mut out = Vec::new();
         let p = ui.painter().clone();
-        let area = Rect::from_min_max(pos2(area.left(), area.top() + 8.0), area.max);
+        // Tiles start RING_ROOM below the clip edge so the focus ring (drawn outside the
+        // poster) is never cut off on the first row.
+        const RING_ROOM: f32 = 10.0;
+        let area = Rect::from_min_max(pos2(area.left(), area.top() + 2.0), area.max);
         // A show's page: 16:9 episode stills instead of posters.
         let wide = matches!(self.source, Source::Show(_));
         let aspect = if wide { 9.0 / 16.0 } else { ASPECT };
@@ -58,7 +61,7 @@ impl App {
         let row_h = tile_h + GAP;
         let n = self.items.len();
         let rows = n.div_ceil(cols);
-        let visible_rows = ((area.height() / row_h).floor() as usize).max(1);
+        let visible_rows = (((area.height() - RING_ROOM) / row_h).floor() as usize).max(1);
 
         // Wheel scrolls by rows; moving the selection keeps it in view.
         let resp = ui.interact(area, ui.scope_id().with("grid"), Sense::hover());
@@ -79,7 +82,7 @@ impl App {
         }
         self.scroll = self.scroll.clamp(0.0, rows.saturating_sub(visible_rows) as f32);
         let first_row = self.scroll.floor() as usize;
-        let y0 = area.top() - (self.scroll - first_row as f32) * row_h;
+        let y0 = area.top() + RING_ROOM - (self.scroll - first_row as f32) * row_h;
 
         let clip = p.with_clip_rect(area);
         let mut loads = 0;
