@@ -18,7 +18,7 @@ Fedora's own ffmpeg can't decode H.264/HEVC. Enable RPM Fusion first:
 ```bash
 sudo dnf install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
 sudo dnf swap ffmpeg-free ffmpeg --allowerasing
-sudo dnf install mpv-libs mpv-devel gcc
+sudo dnf install mpv-libs mpv-devel gcc systemd-devel
 # Hardware H.264 decoding on AMD/Radeon:
 sudo dnf swap mesa-va-drivers mesa-va-drivers-freeworld
 ```

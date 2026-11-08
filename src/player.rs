@@ -182,6 +182,7 @@ pub struct Player {
     pub s: State,
     ctx: egui::Context,
     tracks_dirty: bool,
+    sub_lifted: bool,
 }
 
 impl Player {
@@ -227,6 +228,7 @@ impl Player {
             s: State { speed: 1.0, volume: 100.0, sub_scale: 1.0, ..Default::default() },
             ctx,
             tracks_dirty: false,
+            sub_lifted: false,
         };
         p.apply_config(cfg);
         Ok(p)
@@ -360,6 +362,14 @@ impl Player {
 
     pub fn set_speed(&self, s: f64) {
         self.set("speed", &format!("{:.2}", s.clamp(0.25, 4.0)));
+    }
+
+    /// Lift subtitles above jimmy's controls while they're visible.
+    pub fn set_sub_lift(&mut self, lifted: bool) {
+        if self.sub_lifted != lifted {
+            self.sub_lifted = lifted;
+            self.set("sub-margin-y", if lifted { "70" } else { "22" });
+        }
     }
 
     pub fn add(&self, prop: &str, by: f64) {

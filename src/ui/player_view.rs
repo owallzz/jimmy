@@ -43,6 +43,9 @@ impl App {
         }
 
         let visible = self.osd_visible_now();
+        if let Some(pl) = self.player.as_mut() {
+            pl.set_sub_lift(visible && self.overlay == super::Overlay::None);
+        }
         if !visible && self.overlay == super::Overlay::None {
             ui.ctx().set_cursor_icon(egui::CursorIcon::None);
         }
