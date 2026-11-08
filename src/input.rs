@@ -423,6 +423,9 @@ impl Bindings {
             (Browser, c(K::D), A::PageDown),
             (Browser, c(K::U), A::PageUp),
             (Browser, k(K::O), A::Options),
+            (Browser, k(K::OpenBracket), A::PrevTab),
+            (Browser, k(K::CloseBracket), A::NextTab),
+            (Browser, k(K::P), A::AddToPlaylist),
             (List, k(K::ArrowUp), A::Up),
             (List, k(K::ArrowDown), A::Down),
             (List, k(K::ArrowLeft), A::Left),
@@ -482,6 +485,10 @@ impl Bindings {
             (Player, k(K::K), A::VolumeUp),
             (Player, k(K::J), A::VolumeDown),
             (Player, k(K::Q), A::Stop),
+            (Player, s(K::Period), A::NextItem),
+            (Player, s(K::Comma), A::PrevItem),
+            (Player, k(K::E), A::Episodes),
+            (Player, k(K::R), A::CycleRepeat),
             (Player, k(K::Backspace), A::Stop),
         ];
         use PadInput as P;
@@ -501,6 +508,9 @@ impl Bindings {
             (Browser, P::X, A::Options),
             (Browser, P::Y, A::Filter),
             (Browser, P::Start, A::Menu),
+            (Browser, P::Lt, A::PrevTab),
+            (Browser, P::Rt, A::NextTab),
+            (Browser, P::Rs, A::AddToPlaylist),
             (List, P::DpadUp, A::Up),
             (List, P::DpadDown, A::Down),
             (List, P::DpadLeft, A::Left),
@@ -534,6 +544,9 @@ impl Bindings {
             (Player, P::RstickDown, A::BrightnessDown),
             (Player, P::Rs, A::Mute),
             (Player, P::Start, A::Tracks),
+            (Player, P::RstickRight, A::NextItem),
+            (Player, P::RstickLeft, A::PrevItem),
+            (Player, P::Ls, A::Episodes),
         ];
         Self { keys, pads }
     }

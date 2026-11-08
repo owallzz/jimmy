@@ -112,16 +112,12 @@ impl App {
         if !visible {
             return out;
         }
+        out.extend(self.draw_end_cards(ui, rect));
 
         // ---- top: title and clock
         let top = Rect::from_min_size(rect.min, vec2(rect.width(), 90.0));
         vgradient(&p, top, black(0.6), black(0.0));
-        let title = s
-            .path
-            .as_ref()
-            .and_then(|p| p.file_stem())
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let title = s.path.as_ref().map(|p| self.title_of(p)).unwrap_or_default();
         text_clip(&p, pos2(rect.left() + 24.0, rect.top() + 26.0), rect.width() * 0.6, &title, 17.0, white(0.72));
         let mut meta = Vec::new();
         if let Some(ext) = s.path.as_ref().and_then(|p| p.extension()) {
@@ -134,6 +130,13 @@ impl App {
         meta.push(if s.hwdec.is_empty() || s.hwdec == "no" { "sw decode".into() } else { format!("hw {}", s.hwdec) });
         if self.cfg.rescue_mode {
             meta.push("rescue mode".into());
+        }
+        if self.queue.len() > 1 {
+            let name = if self.queue_name.is_empty() { String::new() } else { format!("{} ", self.queue_name) };
+            meta.push(format!("{name}{}/{}", self.queue_idx + 1, self.queue.len()));
+        }
+        if self.cfg.repeat != crate::config::Repeat::Off {
+            meta.push(format!("repeat {}", self.cfg.repeat.label()));
         }
         text(&p, pos2(rect.left() + 24.0, rect.top() + 48.0), Align2::LEFT_CENTER, meta.join(" · "), 13.0, white(0.4));
         let now = now_unix();
@@ -149,14 +152,18 @@ impl App {
         let sy = rect.bottom() - 46.0;
         let cur = fmt_time(s.time_pos);
         let rem = format!("−{}", fmt_time((s.duration - s.time_pos).max(0.0)));
-        // Play/pause state is just an icon, right before the track.
-        let icon = if s.paused { "||" } else { "▶" };
+        // The icon shows what A / Space will do: ▶ while paused, || while playing.
+        let icon = if s.paused { "▶" } else { "||" };
         // Fixed-width slot (the wider of the two icons) so the track doesn't shift on play/pause.
         let slot = measure(&p, "||", 13.0).x.max(measure(&p, "▶", 13.0).x);
-        let ix = rect.left() + 24.0;
-        text(&p, pos2(ix + slot / 2.0, sy), Align2::CENTER_CENTER, icon, 13.0, with_alpha(self.pal.accent, 0.8));
-        let l = text(&p, pos2(ix + slot + 12.0, sy), Align2::LEFT_CENTER, &cur, 15.0, white(0.72));
-        let r = text(&p, pos2(rect.right() - 24.0, sy), Align2::RIGHT_CENTER, &rem, 15.0, white(0.45));
+        // Right end, after the remaining time: [time] ━━━━━ [−left] [▶]
+        let ix = rect.right() - 24.0 - slot;
+        let icon_r = text(&p, pos2(ix + slot / 2.0, sy), Align2::CENTER_CENTER, icon, 13.0, with_alpha(self.pal.accent, 0.8));
+        if ui.interact(icon_r.expand(8.0), ui.scope_id().with("playpause"), Sense::CLICK).clicked() {
+            out.push(Action::PlayPause);
+        }
+        let l = text(&p, pos2(rect.left() + 24.0, sy), Align2::LEFT_CENTER, &cur, 15.0, white(0.72));
+        let r = text(&p, pos2(ix - 12.0, sy), Align2::RIGHT_CENTER, &rem, 15.0, white(0.45));
         let track = Rect::from_min_max(pos2(l.right() + 14.0, sy - 2.0), pos2(r.left() - 14.0, sy + 2.0));
         p.rect_filled(track, 0.0, white(0.2));
         if s.duration > 0.0 {
@@ -215,7 +222,7 @@ impl App {
 
         if self.cfg.show_hints && self.overlay == super::Overlay::None {
             let list: &[(Action, &str)] = &[
-                (Action::PlayPause, "Pause"),
+                (Action::PlayPause, if s.paused { "Play" } else { "Pause" }),
                 (Action::SeekForward, "Seek"),
                 (Action::VolumeUp, "Vol"),
                 (Action::NextSubtitle, "Subs"),
@@ -231,6 +238,59 @@ impl App {
         // Keep the clock and progress ticking while the controls are up.
         if self.screen == Screen::Player {
             ui.ctx().request_repaint_after(Duration::from_millis(if s.paused { 1000 } else { 250 }));
+        }
+        out
+    }
+}
+
+impl App {
+    /// "Up next" countdown card, or the end card when the player stays open after a video.
+    fn draw_end_cards(&mut self, ui: &mut egui::Ui, rect: Rect) -> Vec<Action> {
+        let mut out = Vec::new();
+        let p = ui.painter().clone();
+        let accent = self.pal.accent;
+        let ink = self.pal.ink;
+        if let Some(at) = self.up_next {
+            let Some(next) = self.queue_next().and_then(|i| self.queue.get(i).cloned()) else { return out };
+            let secs = at.saturating_duration_since(std::time::Instant::now()).as_secs_f32().ceil() as u32;
+            let w = 420.0;
+            let r = Rect::from_min_size(pos2(rect.right() - 24.0 - w, rect.bottom() - 110.0 - 120.0), vec2(w, 108.0));
+            p.rect_filled(r, 0.0, black(0.82));
+            text(&p, pos2(r.left() + 16.0, r.top() + 20.0), Align2::LEFT_CENTER, format!("UP NEXT IN {secs}"), 11.0, white(0.5));
+            text_clip(&p, pos2(r.left() + 16.0, r.top() + 46.0), w - 32.0, &self.title_of(&next), 16.0, white(0.85));
+            // Countdown bar.
+            let total = self.cfg.autoplay_countdown.max(1) as f32;
+            let left = at.saturating_duration_since(std::time::Instant::now()).as_secs_f32();
+            let bar = Rect::from_min_size(pos2(r.left(), r.top()), vec2(w * (1.0 - left / total).clamp(0.0, 1.0), 2.0));
+            p.rect_filled(bar, 0.0, accent);
+            let list: &[(Action, &str)] = &[(Action::PlayPause, "Play now"), (Action::Back, "Cancel")];
+            out.extend(self.hints(ui, pos2(r.left() + 16.0, r.bottom() - 22.0), Context::Player, list, 12.0, 18.0, white(0.6), white(0.12)));
+            let resp = ui.interact(r, ui.scope_id().with("upnext"), Sense::CLICK);
+            if resp.clicked() {
+                out.push(Action::NextItem);
+            }
+        } else if self.at_end {
+            let w = 360.0;
+            let r = Rect::from_center_size(rect.center(), vec2(w, 120.0));
+            p.rect_filled(r, 0.0, black(0.82));
+            text(&p, pos2(r.center().x, r.top() + 30.0), Align2::CENTER_CENTER, "Finished", 18.0, white(0.85));
+            let bw = (w - 48.0) / 2.0;
+            for (i, (label, a)) in [("↺ Replay", Action::Replay), ("Back", Action::Stop)].into_iter().enumerate() {
+                let br = Rect::from_min_size(pos2(r.left() + 16.0 + i as f32 * (bw + 16.0), r.bottom() - 56.0), vec2(bw, 40.0));
+                let primary = i == 0;
+                p.rect_filled(br, 0.0, if primary { accent } else { white(0.12) });
+                text(&p, pos2(br.left() + 12.0, br.center().y), Align2::LEFT_CENTER, label, 15.0, if primary { ink } else { white(0.8) });
+                let hint = if primary { Action::PlayPause } else { Action::Back };
+                if let Some((cap, _)) = self.glyph(Context::Player, hint) {
+                    chip(&p, pos2(br.right() - 10.0 - measure(&p, &cap, 12.0).x.max(12.0 * 1.7 - 8.0) - 8.0, br.center().y), &cap, 12.0, if primary { ink } else { white(0.8) }, if primary { with_alpha(ink, 0.18) } else { black(0.4) });
+                }
+                if ui.interact(br, ui.scope_id().with(("endbtn", i)), Sense::CLICK).clicked() {
+                    out.push(a);
+                }
+            }
+        }
+        if self.up_next.is_some() {
+            ui.ctx().request_repaint_after(Duration::from_millis(200));
         }
         out
     }

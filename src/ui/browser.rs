@@ -37,6 +37,9 @@ impl App {
             Source::All => (String::new(), "My media".into()),
             Source::Continue => (String::new(), "Continue watching".into()),
             Source::Recent => (String::new(), "Recently played".into()),
+            Source::Movies => (String::new(), "Movies".into()),
+            Source::Shows => (String::new(), "TV shows".into()),
+            Source::Show(key) => ("TV shows / ".into(), self.catalog.show(key).map(|s| s.name.clone()).unwrap_or_default()),
         };
         let max_path = (rect.width() * 0.35).max(120.0);
         if !parent.is_empty() {
@@ -91,7 +94,43 @@ impl App {
         let label = |s: &str, pos, align| {
             text(&p, pos, align, s, 11.0, pal.faint);
         };
-        label("NAME", pos2(name_left, cy), Align2::LEFT_CENTER);
+        let seasons = match &self.source {
+            Source::Show(key) => self.catalog.show(key).map(|s| s.seasons()).unwrap_or_default(),
+            _ => vec![],
+        };
+        if seasons.is_empty() {
+            label("NAME", pos2(name_left, cy), Align2::LEFT_CENTER);
+        } else {
+            // Season tabs (◀ ▶ / LT RT switch).
+            let mut sx = list_rect.left() + PAD;
+            if seasons.len() > 1 {
+                if let Some((cap, _)) = self.glyph(Context::Browser, Action::PrevTab) {
+                    sx = chip(&p, pos2(sx, cy), &cap, 10.0, pal.dim, pal.raise).right() + 6.0;
+                }
+            }
+            for sn in &seasons {
+                let t = format!("SEASON {sn}");
+                let w = measure(&p, &t, 11.0).x + 18.0;
+                let cell = Rect::from_min_size(pos2(sx, cy - 11.0), vec2(w, 22.0));
+                let on = *sn == self.season;
+                if on {
+                    p.rect_filled(cell, 0.0, pal.raise);
+                    p.rect_filled(Rect::from_min_max(pos2(cell.left(), cell.bottom() - 2.0), cell.right_bottom()), 0.0, pal.accent);
+                }
+                text(&p, cell.center(), Align2::CENTER_CENTER, &t, 11.0, if on { pal.text } else { pal.faint });
+                if ui.interact(cell, ui.scope_id().with(("season", *sn)), Sense::CLICK).clicked() {
+                    self.season = *sn;
+                    self.focus = 0;
+                    self.rebuild_catalog_view();
+                }
+                sx += w + 4.0;
+            }
+            if seasons.len() > 1 {
+                if let Some((cap, _)) = self.glyph(Context::Browser, Action::NextTab) {
+                    chip(&p, pos2(sx + 2.0, cy), &cap, 10.0, pal.dim, pal.raise);
+                }
+            }
+        }
         if show_prog {
             label("PROGRESS", pos2(c_prog, cy), Align2::LEFT_CENTER);
         }
@@ -128,7 +167,7 @@ impl App {
         let p_rows = p.with_clip_rect(rows_rect);
         let mut hovered = None;
         for (vis_i, idx) in (first..n.min(first + visible + 1)).enumerate() {
-            let item = &self.items[idx];
+            let item = &self.items[idx].clone();
             let top = rows_rect.top() + vis_i as f32 * ROW_H;
             let r = Rect::from_min_size(pos2(rows_rect.left(), top), vec2(rows_rect.width(), ROW_H));
             let focused = idx == self.focus;
@@ -145,19 +184,41 @@ impl App {
             let icon = if item.entry.is_dir { "▸" } else { "·" };
             let icon_c = if focused { pal.ink } else if item.entry.is_dir { pal.accent } else { pal.faint };
             text(&p_rows, pos2(r.left() + PAD, y), Align2::LEFT_CENTER, icon, 14.0, icon_c);
-            let name = if item.entry.is_dir { format!("{}/", item.entry.name) } else { item.entry.name.clone() };
+            let name = self.row_name(item);
             let nr = text_clip(&p_rows, pos2(name_left, y), name_right - name_left, &name, 17.0, fg);
-            // Flat lists (My media, Continue, Recent) also show which folder a file lives in.
-            if !matches!(self.source, Source::Dir(_)) {
-                if let Some(folder) = item.entry.path.parent().and_then(|d| d.file_name()) {
-                    let fx = nr.right() + 12.0;
-                    if fx + 40.0 < name_right {
-                        text_clip(&p_rows, pos2(fx, y), name_right - fx, &folder.to_string_lossy(), 13.0, if focused { pal.ink } else { pal.faint });
-                    }
+            // Second, quieter text after the name: a show's size, or which folder a file lives in.
+            let note = if let Some(key) = &item.show {
+                self.catalog.show(key).map(|s| {
+                    let ns = s.seasons().len();
+                    let ne = s.episodes.len();
+                    format!("{ns} season{} · {ne} episode{}", if ns == 1 { "" } else { "s" }, if ne == 1 { "" } else { "s" })
+                })
+            } else if matches!(self.source, Source::All | Source::Continue | Source::Recent) && item.ep.is_none() {
+                item.entry.path.parent().and_then(|d| d.file_name()).map(|f| f.to_string_lossy().into_owned())
+            } else {
+                None
+            };
+            if let Some(note) = note {
+                let fx = nr.right() + 12.0;
+                if fx + 40.0 < name_right {
+                    text_clip(&p_rows, pos2(fx, y), name_right - fx, &note, 13.0, if focused { pal.ink } else { pal.faint });
                 }
             }
 
-            if item.entry.is_dir {
+            if let Some(key) = &item.show {
+                if show_prog {
+                    if let Some(show) = self.catalog.show(key) {
+                        let all_watched = show.episodes.iter().all(|(_, f)| self.hist.get(&f.path).is_some_and(|h| h.watched));
+                        let (t, c) = if all_watched {
+                            ("WATCHED".to_string(), pal.ok)
+                        } else {
+                            (format!("NEXT {}", show.episodes[self.next_up(show)].0.code()), pal.accent)
+                        };
+                        text(&p_rows, pos2(c_prog, y), Align2::LEFT_CENTER, t, 11.0, if focused { pal.ink } else { c });
+                    }
+                }
+                text(&p_rows, pos2(c_size, y), Align2::RIGHT_CENTER, fmt_size(item.entry.size), 15.0, dimc);
+            } else if item.entry.is_dir {
                 if show_prog && self.cfg.roots.contains(&item.entry.path) {
                     text(&p_rows, pos2(c_prog, y), Align2::LEFT_CENTER, "LIBRARY", 11.0, if focused { pal.ink } else { pal.ok });
                 }
@@ -205,6 +266,10 @@ impl App {
                 Source::All => "No media found. Add folders in Settings → Library.".into(),
                 Source::Continue => "Nothing to continue yet".into(),
                 Source::Recent => "Nothing played yet".into(),
+                Source::Movies | Source::Shows | Source::Show(_) if self.loading => "Looking through your folders…".into(),
+                Source::Movies => "No movies found. Add folders in Settings → Library.".into(),
+                Source::Shows => "No TV shows found. Episodes need names like Show S01E02 or a Season 1 folder.".into(),
+                Source::Show(_) => "No episodes".into(),
             })
         } else {
             None
@@ -216,22 +281,21 @@ impl App {
         // ---- hint bar (under the list only)
         if self.cfg.show_hints {
             let hint_y = rect.bottom() - HINT_H / 2.0;
-            let on_dir = self.items.get(self.focus).map(|i| (i.entry.is_dir, self.cfg.roots.contains(&i.entry.path)));
+            let focused = self.items.get(self.focus);
+            let on_show = focused.is_some_and(|i| i.show.is_some());
+            let on_dir = focused.map(|i| (i.entry.is_dir, self.cfg.roots.contains(&i.entry.path)));
             let (open, opt) = match on_dir {
+                _ if on_show => ("Episodes", "Play next"),
                 Some((true, true)) => ("Open", "Remove from library"),
                 Some((true, false)) => ("Open", "Add to library"),
                 _ => ("Play", "From start"),
             };
-            let list: &[(Action, &str)] = &[
-                (Action::Accept, open),
-                (Action::Back, "Back"),
-                (Action::Options, opt),
-                (Action::Filter, "Search"),
-                (Action::Palette, "Commands"),
-                (Action::Menu, "Menu"),
-                (Action::Fullscreen, "Fullscreen"),
-            ];
-            out.extend(self.hints(ui, pos2(rect.left() + PAD, hint_y), Context::Browser, list, 13.0, 22.0, pal.dim, pal.raise));
+            let mut list: Vec<(Action, &str)> = vec![(Action::Accept, open), (Action::Back, "Back"), (Action::Options, opt)];
+            if seasons.len() > 1 {
+                list.push((Action::NextTab, "Season"));
+            }
+            list.extend([(Action::Filter, "Search"), (Action::Palette, "Commands"), (Action::Menu, "Menu")]);
+            out.extend(self.hints(ui, pos2(rect.left() + PAD, hint_y), Context::Browser, &list, 13.0, 22.0, pal.dim, pal.raise));
         }
 
         // ---- info panel

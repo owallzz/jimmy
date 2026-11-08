@@ -41,6 +41,8 @@ impl App {
         let mut v = vec![
             MenuItem::Header("Library"),
             MenuItem::Source(Source::All, "My media".into(), self.all_cache.as_ref().map(|c| c.len())),
+            MenuItem::Source(Source::Shows, "TV shows".into(), self.all_cache.as_ref().map(|_| self.catalog.shows.len())),
+            MenuItem::Source(Source::Movies, "Movies".into(), self.all_cache.as_ref().map(|_| self.catalog.movies.len())),
             MenuItem::Source(Source::Continue, "Continue watching".into(), Some(self.hist.recent(true).len())),
             MenuItem::Source(Source::Recent, "Recently played".into(), None),
             MenuItem::Header("Folders"),
@@ -131,7 +133,7 @@ impl App {
                     let row = Rect::from_min_size(pos2(r.left(), y), vec2(w, 38.0));
                     let si = sel.iter().position(|&s| s == i).unwrap_or(0);
                     let focused = si == self.menu_focus;
-                    let current = matches!(item, MenuItem::Source(s, ..) if *s == self.source || matches!((s, &self.source), (Source::Dir(a), Source::Dir(b)) if b.starts_with(a)));
+                    let current = matches!(item, MenuItem::Source(s, ..) if *s == self.source || (*s == Source::Shows && matches!(self.source, Source::Show(_))) || matches!((s, &self.source), (Source::Dir(a), Source::Dir(b)) if b.starts_with(a)));
                     if focused {
                         p.rect_filled(row, 0.0, pal.accent);
                     }
@@ -140,6 +142,8 @@ impl App {
                         MenuItem::Source(Source::All, l, c) => ("▦", l.clone(), *c),
                         MenuItem::Source(Source::Continue, l, c) => ("▶", l.clone(), *c),
                         MenuItem::Source(Source::Recent, l, c) => ("◷", l.clone(), *c),
+                        MenuItem::Source(Source::Shows | Source::Show(_), l, c) => ("▥", l.clone(), *c),
+                        MenuItem::Source(Source::Movies, l, c) => ("▣", l.clone(), *c),
                         MenuItem::Source(Source::Dir(_), l, c) => ("▤", l.clone(), *c),
                         MenuItem::Browse => ("+", "Browse computer…".into(), None),
                         MenuItem::Settings => ("≡", "Settings".into(), None),
@@ -362,30 +366,64 @@ impl App {
         let mut v = Vec::new();
         match self.tracks_tab {
             0 => {
+                let eps: Vec<Option<crate::media::Episode>> = self.queue.iter().map(|p| crate::media::episode(p)).collect();
+                if self.queue.len() > 1 {
+                    let mut season = None;
+                    for (i, path) in self.queue.iter().enumerate() {
+                        let ep = &eps[i];
+                        if let Some(e) = ep.as_ref().filter(|e| Some(e.season) != season) {
+                            season = Some(e.season);
+                            v.push(TrackRow::Header(format!("Season {}", e.season)));
+                        }
+                        let label = match ep {
+                            Some(e) => format!("{:>2}  {}", e.episode, self.episode_title(path, e).unwrap_or_default()),
+                            None => self.title_of(path),
+                        };
+                        let h = self.hist.get(path);
+                        let meta = if i == self.queue_idx {
+                            "playing".to_string()
+                        } else if h.is_some_and(|h| h.watched) {
+                            "watched".into()
+                        } else if let Some(h) = h.filter(|h| h.resumable()) {
+                            format!("{:.0}%", h.progress() * 100.0)
+                        } else {
+                            String::new()
+                        };
+                        v.push(TrackRow::Queue(i, label, meta, i == self.queue_idx));
+                    }
+                } else {
+                    v.push(TrackRow::Info("Just this video. Play a show or playlist to get a queue.".into()));
+                }
+                v.push(TrackRow::Header("When it ends".into()));
+                v.push(TrackRow::Step(Adj::Autoplay, "Autoplay next".into(), if self.cfg.autoplay { "on".into() } else { "off".into() }));
+                v.push(TrackRow::Step(Adj::Repeat, "Repeat".into(), self.cfg.repeat.label().into()));
+                v.push(TrackRow::Step(Adj::EndAction, "Then".into(), if self.cfg.exit_on_end { "go back".into() } else { "stay".into() }));
+            }
+            1 => {
                 v.push(TrackRow::Select(TrackKind::Sub, None, "Off".into(), String::new(), s.selected(TrackKind::Sub).is_none()));
                 for t in s.tracks_of(TrackKind::Sub) {
                     v.push(TrackRow::Select(TrackKind::Sub, Some(t.id), t.label(), t.meta(), t.selected));
                 }
-                v.push(TrackRow::Header("Adjust"));
+                v.push(TrackRow::Header("Adjust".into()));
                 v.push(TrackRow::Step(Adj::SubDelay, "Delay".into(), format!("{:+.2} s", s.sub_delay)));
                 v.push(TrackRow::Step(Adj::SubSize, "Size".into(), format!("{:.0}%", s.sub_scale * 100.0)));
                 v.push(TrackRow::Step(Adj::SubBox, "Background".into(), if self.cfg.sub_background_box { "box".into() } else { "outline".into() }));
             }
-            1 => {
+            2 => {
                 for t in s.tracks_of(TrackKind::Audio) {
                     v.push(TrackRow::Select(TrackKind::Audio, Some(t.id), t.label(), t.meta(), t.selected));
                 }
                 if s.tracks_of(TrackKind::Audio).next().is_none() {
                     v.push(TrackRow::Info("No audio tracks".into()));
                 }
-                v.push(TrackRow::Header("Adjust"));
+                v.push(TrackRow::Header("Adjust".into()));
                 v.push(TrackRow::Step(Adj::Volume, "Volume".into(), format!("{:.0}%", self.vol)));
             }
             _ => {
                 for t in s.tracks_of(TrackKind::Video) {
                     v.push(TrackRow::Select(TrackKind::Video, Some(t.id), t.label(), t.meta(), t.selected));
                 }
-                v.push(TrackRow::Header("Adjust"));
+                v.push(TrackRow::Header("Adjust".into()));
                 v.push(TrackRow::Step(Adj::Speed, "Speed".into(), format!("{:.2}×", s.speed)));
                 v.push(TrackRow::Step(Adj::Rescue, "Rescue mode".into(), if self.cfg.rescue_mode { "on".into() } else { "off".into() }));
                 let dec = if s.hwdec.is_empty() || s.hwdec == "no" { "software".to_string() } else { s.hwdec.clone() };
@@ -399,11 +437,11 @@ impl App {
     pub(crate) fn tracks_selected_index(&self) -> usize {
         let rows = self.track_rows();
         let sel = Self::track_selectable(&rows);
-        sel.iter().position(|&i| matches!(rows[i], TrackRow::Select(.., true))).unwrap_or(0)
+        sel.iter().position(|&i| matches!(rows[i], TrackRow::Select(.., true) | TrackRow::Queue(.., true))).unwrap_or(0)
     }
 
     fn track_selectable(rows: &[TrackRow]) -> Vec<usize> {
-        rows.iter().enumerate().filter(|(_, r)| matches!(r, TrackRow::Select(..) | TrackRow::Step(..))).map(|(i, _)| i).collect()
+        rows.iter().enumerate().filter(|(_, r)| matches!(r, TrackRow::Select(..) | TrackRow::Step(..) | TrackRow::Queue(..))).map(|(i, _)| i).collect()
     }
 
     pub(super) fn tracks_action(&mut self, a: Action) {
@@ -414,11 +452,17 @@ impl App {
             Action::Up => self.tracks_focus = self.tracks_focus.saturating_sub(1),
             Action::Down => self.tracks_focus = (self.tracks_focus + 1).min(sel.len().saturating_sub(1)),
             Action::NextTab | Action::PrevTab => {
-                self.tracks_tab = if a == Action::NextTab { (self.tracks_tab + 1) % 3 } else { (self.tracks_tab + 2) % 3 };
+                self.tracks_tab = if a == Action::NextTab { (self.tracks_tab + 1) % 4 } else { (self.tracks_tab + 3) % 4 };
                 self.tracks_focus = self.tracks_selected_index();
             }
-            Action::Back | Action::Tracks | Action::Menu => self.overlay = Overlay::None,
+            Action::Back | Action::Tracks | Action::Menu | Action::Episodes => self.overlay = Overlay::None,
             Action::Accept | Action::Left | Action::Right => match focused {
+                Some(TrackRow::Queue(i, ..)) if a == Action::Accept => {
+                    self.overlay = Overlay::None;
+                    if i != self.queue_idx {
+                        self.play_queue_at(i);
+                    }
+                }
                 Some(TrackRow::Select(kind, id, ..)) if a == Action::Accept => {
                     if let Some(p) = &self.player {
                         p.select_track(kind, id);
@@ -455,6 +499,20 @@ impl App {
                 }
             }
             Adj::Volume => self.set_volume(self.vol + 5.0 * d, true),
+            Adj::Autoplay => {
+                self.cfg.autoplay = !self.cfg.autoplay;
+                self.cfg.save();
+            }
+            Adj::Repeat => {
+                use crate::config::Repeat;
+                let all = [Repeat::Off, Repeat::One, Repeat::All];
+                let i = all.iter().position(|r| *r == self.cfg.repeat).unwrap_or(0) as i32 + d as i32;
+                self.set_repeat(all[i.rem_euclid(3) as usize]);
+            }
+            Adj::EndAction => {
+                self.cfg.exit_on_end = !self.cfg.exit_on_end;
+                self.cfg.save();
+            }
             Adj::Speed => {
                 if let Some(p) = &self.player {
                     p.set_speed(p.s.speed + 0.25 * d);
@@ -486,7 +544,8 @@ impl App {
         // tabs
         let tr = Rect::from_min_size(r.min, vec2(w, 42.0));
         p.rect_filled(tr, 0.0, pal.bg);
-        let tabs = ["SUBTITLES", "AUDIO", "VIDEO"];
+        let is_show = self.queue.len() > 1 && self.queue.iter().all(|p| crate::media::episode(p).is_some());
+        let tabs = [if is_show { "EPISODES" } else { "QUEUE" }, "SUBS", "AUDIO", "VIDEO"];
         let lb = self.glyph(Context::List, Action::PrevTab).map(|g| g.0).unwrap_or_default();
         let rb = self.glyph(Context::List, Action::NextTab).map(|g| g.0).unwrap_or_default();
         let lw = if lb.is_empty() { 8.0 } else { chip(&p, pos2(tr.left() + 8.0, tr.center().y), &lb, 11.0, pal.text, pal.raise).right() + 4.0 - tr.left() };
@@ -494,7 +553,7 @@ impl App {
         if !rb.is_empty() {
             chip(&p, pos2(tr.right() - rw + 4.0, tr.center().y), &rb, 11.0, pal.text, pal.raise);
         }
-        let tw = (w - lw - rw) / 3.0;
+        let tw = (w - lw - rw) / 4.0;
         for (i, t) in tabs.iter().enumerate() {
             let cell = Rect::from_min_size(pos2(tr.left() + lw + i as f32 * tw, tr.top() + 6.0), vec2(tw - 4.0, 30.0));
             let on = i == self.tracks_tab;
@@ -510,7 +569,25 @@ impl App {
 
         let rows = self.track_rows();
         let sel = Self::track_selectable(&rows);
-        let mut y = tr.bottom() + 8.0;
+        // Long episode lists scroll: keep the focused row (plus one after it) in view.
+        let list_bottom = r.bottom() - if self.cfg.show_hints { 48.0 } else { 8.0 };
+        let row_h = |row: &TrackRow| match row {
+            TrackRow::Header(_) => 32.0,
+            TrackRow::Info(_) => 28.0,
+            _ => 36.0,
+        };
+        let mut focus_bottom = 0.0;
+        let mut acc = 0.0;
+        for (i, row) in rows.iter().enumerate() {
+            acc += row_h(row);
+            if sel.get(self.tracks_focus) == Some(&i) {
+                focus_bottom = acc + 36.0;
+            }
+        }
+        let avail = list_bottom - (tr.bottom() + 32.0);
+        let offset = (focus_bottom - avail).max(0.0);
+        let p = p.with_clip_rect(Rect::from_min_max(pos2(r.left(), tr.bottom()), pos2(r.right(), list_bottom)));
+        let mut y = tr.bottom() + 8.0 - offset;
         if !rows.is_empty() && !matches!(rows[0], TrackRow::Header(_)) {
             text(&p, pos2(r.left() + 16.0, y + 10.0), Align2::LEFT_CENTER, "# TRACK", 11.0, pal.faint);
             y += 24.0;
@@ -527,6 +604,25 @@ impl App {
                 TrackRow::Info(t) => {
                     text_clip(&p, pos2(r.left() + 16.0, y + 14.0), w - 32.0, t, 12.0, pal.dim);
                     y += 28.0;
+                }
+                TrackRow::Queue(qi, label, meta, current) => {
+                    let rr = Rect::from_min_size(pos2(r.left(), y), vec2(w, 36.0));
+                    if focused {
+                        p.rect_filled(rr, 0.0, pal.accent);
+                    }
+                    let cy = rr.center().y;
+                    let watched = self.queue.get(*qi).and_then(|q| self.hist.get(q)).is_some_and(|h| h.watched);
+                    let fg = if focused { pal.ink } else if watched && !*current { pal.dim } else { pal.text };
+                    if *current {
+                        text(&p, pos2(rr.left() + 16.0, cy), Align2::LEFT_CENTER, "▶", 11.0, if focused { pal.ink } else { pal.accent });
+                    }
+                    text_clip(&p, pos2(rr.left() + 34.0, cy), w * 0.68, label, 15.0, fg);
+                    text_clip_right(&p, pos2(rr.right() - 16.0, cy), w * 0.25, meta, 12.0, if focused { pal.ink } else { pal.dim });
+                    if rr.bottom() <= list_bottom && ui.interact(rr, ui.scope_id().with(("q", i)), Sense::CLICK).clicked() {
+                        self.tracks_focus = si.unwrap_or(0);
+                        out.push(Action::Accept);
+                    }
+                    y += 36.0;
                 }
                 TrackRow::Select(_, _, label, meta, selected) => {
                     let rr = Rect::from_min_size(pos2(r.left(), y), vec2(w, 36.0));
@@ -594,11 +690,16 @@ pub(crate) enum Adj {
     Volume,
     Speed,
     Rescue,
+    Autoplay,
+    Repeat,
+    EndAction,
 }
 
 #[derive(Clone)]
 pub(crate) enum TrackRow {
-    Header(&'static str),
+    Header(String),
+    /// Queue position, label, right-hand note, is it the one playing.
+    Queue(usize, String, String, bool),
     Info(String),
     Select(TrackKind, Option<i64>, String, String, bool),
     Step(Adj, String, String),

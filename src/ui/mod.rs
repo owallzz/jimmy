@@ -43,6 +43,24 @@ pub enum Source {
     All,
     Continue,
     Recent,
+    /// Everything in the library that isn't an episode.
+    Movies,
+    /// One row per show.
+    Shows,
+    /// A show's episodes, one season at a time (key from `media::show_key`).
+    Show(String),
+}
+
+impl Source {
+    /// Views built from the "My media" scan.
+    pub fn from_catalog(&self) -> bool {
+        matches!(self, Source::Movies | Source::Shows | Source::Show(_))
+    }
+}
+
+/// Stand-in path for a show row (rows are keyed by path).
+pub(crate) fn show_path(key: &str) -> PathBuf {
+    PathBuf::from(format!("jimmy:show/{key}"))
 }
 
 /// One row in the browser.
@@ -52,6 +70,10 @@ pub struct Item {
     pub hist: Option<HistoryEntry>,
     /// Probed metadata (duration, codecs), once known.
     pub meta: Option<crate::meta::Meta>,
+    /// Set on show rows (TV shows tab): the show's key.
+    pub show: Option<String>,
+    /// Set when the file name looks like an episode.
+    pub ep: Option<crate::media::Episode>,
 }
 
 impl Item {
@@ -133,6 +155,10 @@ pub struct App {
     remembered: Vec<(PathBuf, PathBuf)>,
     /// Last "My media" listing, shown instantly while a fresh scan runs.
     pub(crate) all_cache: Option<Vec<Entry>>,
+    /// My media split into shows and movies (rebuilt with each scan).
+    pub(crate) catalog: crate::media::Catalog,
+    /// Season shown on a show's page.
+    pub(crate) season: u32,
     want_focus: Option<PathBuf>,
 
     pub(crate) screen: Screen,
@@ -248,6 +274,8 @@ impl App {
             scroll_focus: usize::MAX,
             remembered: vec![],
             all_cache: None,
+            catalog: Default::default(),
+            season: 1,
             want_focus: None,
             screen: Screen::Browser,
             overlay: Overlay::None,
@@ -285,7 +313,7 @@ impl App {
             toast: None,
             pointer_moved: Instant::now(),
             menu_focus: 0,
-            tracks_tab: 0,
+            tracks_tab: 1,
             tracks_focus: 0,
             palette_query: String::new(),
             palette_focus: 0,
@@ -381,6 +409,24 @@ impl App {
                     self.set_items(vec![]);
                 }
             }
+            cat if cat.from_catalog() => {
+                self.remember_focus();
+                if let Source::Show(key) = &cat {
+                    if let Some(show) = self.catalog.show(key) {
+                        let i = self.next_up(show);
+                        self.season = show.episodes[i].0.season;
+                        self.want_focus = Some(show.episodes[i].1.path.clone());
+                    }
+                }
+                self.source = cat;
+                self.filter.clear();
+                self.list_error = None;
+                if self.all_cache.is_none() {
+                    self.loading = true;
+                    self.scanner.request_all(&self.cfg.roots);
+                }
+                self.rebuild_catalog_view();
+            }
             virt => {
                 self.remember_focus();
                 self.source = virt;
@@ -388,6 +434,74 @@ impl App {
                 self.rebuild_virtual();
             }
         }
+    }
+
+    /// The episode to offer next: the one in progress, else the first unwatched one after the
+    /// last one played, else the first unwatched, else the first.
+    pub(crate) fn next_up(&self, show: &crate::media::Show) -> usize {
+        let hist = |i: usize| self.hist.get(&show.episodes[i].1.path);
+        let last = (0..show.episodes.len()).filter(|&i| hist(i).is_some_and(|h| h.last_played > 0)).max_by_key(|&i| hist(i).map(|h| h.last_played));
+        let unwatched = |from: usize| (from..show.episodes.len()).find(|&i| !hist(i).is_some_and(|h| h.watched));
+        match last {
+            Some(i) if hist(i).is_some_and(|h| h.resumable()) => i,
+            Some(i) => unwatched(i + 1).or_else(|| unwatched(0)).unwrap_or(0),
+            None => unwatched(0).unwrap_or(0),
+        }
+    }
+
+    /// Rows for Movies, TV shows and a show's page, from the last My media scan.
+    pub(crate) fn rebuild_catalog_view(&mut self) {
+        let items: Vec<Item> = match self.source.clone() {
+            Source::Movies => self.catalog.movies.clone().into_iter().map(|e| self.item(e)).collect(),
+            Source::Shows => self
+                .catalog
+                .shows
+                .clone()
+                .iter()
+                .map(|show| {
+                    let entry = Entry {
+                        name: show.name.clone(),
+                        path: show_path(&show.key),
+                        is_dir: true,
+                        size: show.episodes.iter().map(|(_, e)| e.size).sum(),
+                        modified: show.episodes.iter().filter_map(|(_, e)| e.modified).max(),
+                        subs: vec![],
+                    };
+                    Item { entry, hist: None, meta: None, show: Some(show.key.clone()), ep: None }
+                })
+                .collect(),
+            Source::Show(key) => {
+                let Some(show) = self.catalog.show(&key).cloned() else {
+                    self.set_items(vec![]);
+                    return;
+                };
+                if !show.seasons().contains(&self.season) {
+                    self.season = show.seasons().first().copied().unwrap_or(1);
+                }
+                show.episodes.into_iter().filter(|(e, _)| e.season == self.season).map(|(_, f)| self.item(f)).collect()
+            }
+            _ => return,
+        };
+        if self.all_cache.is_some() {
+            self.loading = false;
+        }
+        self.set_items(items);
+    }
+
+    /// Season tabs on a show's page: move by `d`. Returns false at either end.
+    fn change_season(&mut self, d: i32) -> bool {
+        let Source::Show(key) = &self.source else { return false };
+        let Some(show) = self.catalog.show(key) else { return false };
+        let seasons = show.seasons();
+        let i = seasons.iter().position(|s| *s == self.season).unwrap_or(0) as i32 + d;
+        if i < 0 || i >= seasons.len() as i32 {
+            return false;
+        }
+        self.season = seasons[i as usize];
+        self.focus = 0;
+        self.rebuild_catalog_view();
+        self.focus = self.first_unwatched();
+        true
     }
 
     /// "Browse computer…": the file explorer, starting at the home folder.
@@ -414,7 +528,8 @@ impl App {
     fn item(&self, entry: Entry) -> Item {
         let hist = self.hist.get(&entry.path).cloned();
         let meta = self.meta_cache.get(&entry.path, entry.size, entry.modified).cloned();
-        Item { entry, hist, meta }
+        let ep = if entry.is_dir { None } else { crate::media::episode(&entry.path) };
+        Item { entry, hist, meta, show: None, ep }
     }
 
     /// Only files inside the user's library folders get probed.
@@ -558,6 +673,8 @@ impl App {
         }
         if matches!(self.source, Source::Continue | Source::Recent) {
             self.rebuild_virtual();
+        } else if self.source == Source::Shows {
+            self.rebuild_catalog_view();
         }
     }
 
@@ -570,6 +687,15 @@ impl App {
         // Back never switches tabs (only the menu does): inside a folder it goes up one level, and
         // at a tab's top level (My media, Continue watching, Recent, a library's root, or the
         // filesystem root when browsing) it opens the menu.
+        // A show's page is inside the TV shows tab, so Back goes up to the list of shows.
+        if let Source::Show(key) = &self.source {
+            let focus = show_path(key);
+            self.open_source(Source::Shows);
+            if let Some(i) = self.items.iter().position(|i| i.entry.path == focus) {
+                self.focus = i;
+            }
+            return;
+        }
         let parent = match &self.source {
             Source::Dir(d) if self.exploring || !self.cfg.roots.contains(d) => d.parent().map(|p| (p.to_path_buf(), d.clone())),
             _ => None,
@@ -585,11 +711,34 @@ impl App {
 
     fn activate(&mut self, from_start: bool) {
         let Some(item) = self.items.get(self.focus).cloned() else { return };
-        if item.entry.is_dir {
+        if let Some(key) = item.show {
+            self.open_source(Source::Show(key));
+        } else if item.entry.is_dir {
             self.open_dir(item.entry.path, None);
         } else {
-            self.play(&item.entry.path, from_start);
+            self.play_with_queue(&item.entry.path, from_start);
         }
+    }
+
+    /// Play a file; an episode queues up the rest of its show so the next one autoplays.
+    pub(crate) fn play_with_queue(&mut self, path: &Path, from_start: bool) {
+        let show = crate::media::episode(path).and_then(|e| self.catalog.show(&crate::media::show_key(&e.show)).cloned());
+        match show {
+            Some(show) if show.episodes.iter().any(|(_, f)| f.path == path) => {
+                let list: Vec<PathBuf> = show.episodes.iter().map(|(_, f)| f.path.clone()).collect();
+                let idx = list.iter().position(|p| p == path).unwrap_or(0);
+                self.play_queue(list, idx, show.name.clone(), from_start);
+            }
+            _ => self.play(path, from_start),
+        }
+    }
+
+    /// Options (X) on a show row: straight to its next episode.
+    fn play_next_up(&mut self, key: &str) {
+        let Some(show) = self.catalog.show(key).cloned() else { return };
+        let i = self.next_up(&show);
+        let list: Vec<PathBuf> = show.episodes.iter().map(|(_, f)| f.path.clone()).collect();
+        self.play_queue(list, i, show.name.clone(), false);
     }
 
     // ------------------------------------------------------------ playback
@@ -1179,15 +1328,29 @@ impl App {
             Accept => self.activate(false),
             // On a folder, X adds it to the library (or removes it); on a file it plays from the start.
             Options => match self.items.get(self.focus).cloned() {
+                Some(Item { show: Some(key), .. }) => self.play_next_up(&key),
                 Some(i) if i.entry.is_dir => self.toggle_library(&i.entry.path),
                 _ => self.activate(true),
             },
+            // On a show's page, left/right (and LT/RT, [ ]) switch seasons.
+            PrevTab => {
+                self.change_season(-1);
+            }
+            NextTab => {
+                self.change_season(1);
+            }
             Right => {
-                if self.items.get(self.focus).is_some_and(|i| i.entry.is_dir) {
+                if self.change_season(1) {
+                } else if self.items.get(self.focus).is_some_and(|i| i.entry.is_dir) {
                     self.activate(false);
                 }
             }
-            Back | Left => self.go_up(),
+            Left => {
+                if !self.change_season(-1) {
+                    self.go_up();
+                }
+            }
+            Back => self.go_up(),
             Filter => {
                 if self.last_was_pad {
                     self.open_osk(osk::OskTarget::Filter);
@@ -1332,6 +1495,49 @@ impl App {
             p.set_loop_file(r == crate::config::Repeat::One);
         }
         self.toast(format!("Repeat: {}", r.label()));
+    }
+
+    /// Episode title: from the file name for now (online metadata fills in more later).
+    pub(crate) fn episode_title(&self, _path: &Path, e: &crate::media::Episode) -> Option<String> {
+        e.title.clone()
+    }
+
+    /// The name shown in a browser row.
+    pub(crate) fn row_name(&self, item: &Item) -> String {
+        if item.show.is_some() {
+            return item.entry.name.clone();
+        }
+        if item.entry.is_dir {
+            return format!("{}/", item.entry.name);
+        }
+        match (&self.source, &item.ep) {
+            // A show's page: "3  Title" (the show and season are already on screen).
+            (Source::Show(_), Some(e)) => {
+                let title = self.episode_title(&item.entry.path, e).unwrap_or_else(|| format!("Episode {}", e.episode));
+                match e.episode_end {
+                    Some(end) => format!("{}–{}  {title}", e.episode, end),
+                    None => format!("{:>2}  {title}", e.episode),
+                }
+            }
+            (Source::Dir(_), _) => item.entry.name.clone(),
+            (_, Some(_)) => self.title_of(&item.entry.path),
+            (Source::Movies, None) => match crate::media::movie_title(&item.entry.name) {
+                (t, Some(y)) => format!("{t} ({y})"),
+                (t, None) => t,
+            },
+            _ => item.entry.name.clone(),
+        }
+    }
+
+    /// How a file is named in the UI: "Show · S01E02 · Title", a movie's title, or the file name.
+    pub(crate) fn title_of(&self, path: &Path) -> String {
+        if let Some(e) = crate::media::episode(path) {
+            return match self.episode_title(path, &e) {
+                Some(t) => format!("{} · {} · {t}", e.show, e.code()),
+                None => format!("{} · {}", e.show, e.code()),
+            };
+        }
+        path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
     }
 
     /// Settings → Library → Clear watch history.
@@ -1537,7 +1743,13 @@ impl eframe::App for App {
         if let Some(l) = self.scanner.poll() {
             let wanted = if l.all { self.source == Source::All } else { Source::Dir(l.dir.clone()) == self.source };
             if l.all {
+                self.catalog = crate::media::Catalog::build(&l.entries);
                 self.all_cache = Some(l.entries.clone());
+                if self.source.from_catalog() {
+                    self.loading = false;
+                    self.list_error = l.error.clone();
+                    self.rebuild_catalog_view();
+                }
             }
             if wanted {
                 self.loading = false;
