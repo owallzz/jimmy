@@ -173,7 +173,7 @@ pub fn natural_key(s: &str) -> Vec<(u8, u64, String)> {
 }
 
 #[cfg(target_os = "linux")]
-fn lower_io_priority() {
+pub fn lower_io_priority() {
     // ioprio_set(IOPRIO_WHO_PROCESS, 0 = this thread, IOPRIO_CLASS_IDLE << 13)
     const IOPRIO_WHO_PROCESS: libc::c_long = 1;
     const IOPRIO_CLASS_IDLE: libc::c_long = 3;
@@ -183,7 +183,7 @@ fn lower_io_priority() {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn lower_io_priority() {}
+pub fn lower_io_priority() {}
 
 #[derive(Clone, Debug)]
 enum Request {

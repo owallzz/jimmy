@@ -11,6 +11,8 @@ use crate::action::{Action, Context};
 use crate::config::{Config, History, HistoryEntry};
 use crate::input::{Bindings, KeyChord, PadEvent, PadInput, PadKind, Repeater};
 use crate::library::{Entry, Scanner};
+use crate::meta::{MetaCache, ProbeResult, Prober};
+use std::collections::HashSet;
 use crate::player::{DisplayHandle, GetProcAddress, Player, PlayerEvent, TrackKind};
 use crate::system::System;
 use crate::theme::{self, Palette};
@@ -48,6 +50,15 @@ pub enum Source {
 pub struct Item {
     pub entry: Entry,
     pub hist: Option<HistoryEntry>,
+    /// Probed metadata (duration, codecs), once known.
+    pub meta: Option<crate::meta::Meta>,
+}
+
+impl Item {
+    /// Best known length: from playback, else from probing.
+    pub fn duration(&self) -> f64 {
+        self.hist.as_ref().map(|h| h.duration).filter(|d| *d > 0.0).or_else(|| self.meta.as_ref().map(|m| m.duration).filter(|d| *d > 0.0)).unwrap_or(0.0)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -119,6 +130,15 @@ pub struct App {
     playing_path: Option<PathBuf>,
 
     sys: System,
+    meta_cache: MetaCache,
+    prober: Prober,
+    /// File waiting out the hover pause before it gets probed.
+    probe_wait: Option<(PathBuf, Instant)>,
+    pub(crate) probe_requested: HashSet<PathBuf>,
+    pub(crate) probe_failed: HashSet<PathBuf>,
+    last_meta_write: Instant,
+    /// Row under the mouse in the browser (last frame).
+    pub(crate) hover_item: Option<usize>,
     /// Combined volume 0..=volume_max (100 = system max, above = boost inside jimmy).
     pub(crate) vol: f64,
     vol_touched: Instant,
@@ -207,6 +227,13 @@ impl App {
             last_hist_write: Instant::now(),
             playing_path: None,
             sys: System::new(ctx.clone()),
+            meta_cache: MetaCache::load(),
+            prober: Prober::new(ctx.clone()),
+            probe_wait: None,
+            probe_requested: HashSet::new(),
+            probe_failed: HashSet::new(),
+            last_meta_write: Instant::now(),
+            hover_item: None,
             vol: 100.0,
             vol_touched: Instant::now() - Duration::from_secs(60),
             pad_rx: crate::input::spawn_gamepad_thread(ctx.clone(), 0.15),
@@ -328,7 +355,72 @@ impl App {
 
     fn item(&self, entry: Entry) -> Item {
         let hist = self.hist.get(&entry.path).cloned();
-        Item { entry, hist }
+        let meta = self.meta_cache.get(&entry.path, entry.size, entry.modified).cloned();
+        Item { entry, hist, meta }
+    }
+
+    /// Only files inside the user's library folders get probed.
+    pub(crate) fn in_library(&self, path: &Path) -> bool {
+        self.cfg.roots.iter().any(|r| path.starts_with(r))
+    }
+
+    /// Probe the file the user is lingering on (selected or under the mouse) after a short pause.
+    fn schedule_probe(&mut self, ctx: &egui::Context) {
+        const PAUSE: Duration = Duration::from_millis(400);
+        if self.screen != Screen::Browser {
+            self.probe_wait = None;
+            return;
+        }
+        // The selected item first (controller/keyboard), then whatever the mouse rests on.
+        let needs = |i: &&Item| {
+            !i.entry.is_dir && i.meta.is_none() && !self.probe_requested.contains(&i.entry.path) && self.in_library(&i.entry.path)
+        };
+        let candidate = [Some(self.focus), self.hover_item]
+            .into_iter()
+            .flatten()
+            .filter_map(|idx| self.items.get(idx))
+            .find(needs);
+        let Some(path) = candidate.map(|i| i.entry.path.clone()) else {
+            self.probe_wait = None;
+            return;
+        };
+        match &self.probe_wait {
+            Some((p, since)) if *p == path => {
+                if since.elapsed() >= PAUSE {
+                    self.prober.request(&path);
+                    self.probe_requested.insert(path);
+                    self.probe_wait = None;
+                } else {
+                    ctx.request_repaint_after(PAUSE - since.elapsed());
+                }
+            }
+            _ => {
+                self.probe_wait = Some((path, Instant::now()));
+                ctx.request_repaint_after(PAUSE);
+            }
+        }
+    }
+
+    fn take_probe_results(&mut self) {
+        for r in self.prober.poll() {
+            match r {
+                ProbeResult::Ok(path, meta) => {
+                    self.meta_cache.insert(&path, meta.clone());
+                    for list in [&mut self.all_items, &mut self.items] {
+                        for it in list.iter_mut().filter(|i| i.entry.path == path) {
+                            it.meta = Some(meta.clone());
+                        }
+                    }
+                }
+                ProbeResult::Failed(path) => {
+                    self.probe_failed.insert(path);
+                }
+            }
+        }
+        if self.last_meta_write.elapsed() > Duration::from_secs(30) {
+            self.last_meta_write = Instant::now();
+            self.meta_cache.save_if_dirty();
+        }
     }
 
     fn remember_focus(&mut self) {
@@ -340,26 +432,24 @@ impl App {
 
     fn rebuild_virtual(&mut self) {
         let only_unfinished = self.source == Source::Continue;
-        let entries: Vec<Item> = self
+        let entries: Vec<Entry> = self
             .hist
             .recent(only_unfinished)
             .into_iter()
             .take(200)
-            .map(|(path, h)| {
+            .map(|(path, _)| {
                 let meta = std::fs::metadata(&path).ok();
-                Item {
-                    entry: Entry {
-                        name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-                        is_dir: false,
-                        size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
-                        modified: meta.and_then(|m| m.modified().ok()),
-                        subs: vec![],
-                        path,
-                    },
-                    hist: Some(h.clone()),
+                Entry {
+                    name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                    is_dir: false,
+                    size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
+                    modified: meta.and_then(|m| m.modified().ok()),
+                    subs: vec![],
+                    path,
                 }
             })
             .collect();
+        let entries: Vec<Item> = entries.into_iter().map(|e| self.item(e)).collect();
         self.loading = false;
         self.list_error = None;
         self.set_items(entries);
@@ -469,7 +559,6 @@ impl App {
         self.screen = Screen::Player;
         self.overlay = Overlay::None;
         self.osd_until = Instant::now() + Duration::from_millis(self.cfg.osd_timeout_ms);
-        self.sys.inhibit(true);
     }
 
     fn record_position(&mut self) {
@@ -498,7 +587,6 @@ impl App {
         self.want_focus = self.playing_path.take();
         self.screen = Screen::Browser;
         self.overlay = Overlay::None;
-        self.sys.inhibit(false);
         self.hist.save_if_dirty();
         self.refresh_hist_in_items();
         if let Some(f) = self.want_focus.take() {
@@ -534,15 +622,13 @@ impl App {
                     self.want_focus = self.playing_path.take();
                     self.screen = Screen::Browser;
                     self.overlay = Overlay::None;
-                    self.sys.inhibit(false);
-                    self.hist.save_if_dirty();
+                                self.hist.save_if_dirty();
                     self.refresh_hist_in_items();
                 } else if let Some(err) = self.player.as_ref().and_then(|p| p.s.error.clone()) {
                     self.toast(err);
                     self.playing_path = None;
                     self.screen = Screen::Browser;
-                    self.sys.inhibit(false);
-                }
+                            }
             }
         }
     }
@@ -1121,6 +1207,8 @@ impl eframe::App for App {
             if self.fullscreen {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
             }
+            // Keep the screen from blanking for as long as jimmy is open.
+            self.sys.inhibit(true);
         }
 
         if let Some(l) = self.scanner.poll() {
@@ -1142,6 +1230,9 @@ impl eframe::App for App {
         }
         self.sync_system();
 
+        self.take_probe_results();
+        self.schedule_probe(&ctx);
+
         let mut actions = self.collect_input(&ctx);
         actions.extend(self.run_steps(&ctx));
         for a in actions {
@@ -1155,8 +1246,6 @@ impl eframe::App for App {
                 self.last_hist_write = Instant::now();
                 self.hist.save_if_dirty();
             }
-            let paused = self.player.as_ref().is_some_and(|p| p.s.paused);
-            self.sys.inhibit(!paused);
         }
 
         let rect = ui.max_rect();
@@ -1209,6 +1298,7 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.record_position();
         self.hist.save_if_dirty();
+        self.meta_cache.save_if_dirty();
         self.sys.inhibit(false);
         if let Some(p) = self.player.as_mut() {
             p.shutdown();

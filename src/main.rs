@@ -5,6 +5,7 @@ mod config;
 mod input;
 mod install;
 mod library;
+mod meta;
 mod player;
 mod system;
 mod theme;

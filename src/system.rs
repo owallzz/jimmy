@@ -5,7 +5,7 @@
 //! - Linux volume: `wpctl` (WirePlumber, part of every PipeWire install).
 //! - Linux backlight: read `/sys/class/backlight`, write through systemd-logind (`busctl`), which
 //!   works without root for the active session and keeps GNOME's slider in sync.
-//! - Linux screen awake: `gnome-session-inhibit`, falling back to `systemd-inhibit`.
+//! - Linux screen awake (whole time jimmy is open): `gnome-session-inhibit`, falling back to `systemd-inhibit`.
 //! - macOS (development): `osascript` for volume, `caffeinate` to stay awake, no backlight.
 
 use std::process::{Child, Command, Stdio};
@@ -286,15 +286,19 @@ mod awake {
             .ok()
     }
 
+    // The inhibitor runs a tiny watch loop instead of `sleep infinity`, so if jimmy ever
+    // crashes the inhibit ends within seconds instead of keeping the screen on forever.
     #[cfg(target_os = "linux")]
     pub fn start() -> Option<Child> {
-        spawn("gnome-session-inhibit", &["--inhibit", "idle:suspend", "--reason", "Playing video", "--app-id", "jimmy", "sleep", "infinity"])
-            .or_else(|| spawn("systemd-inhibit", &["--what=idle:sleep", "--who=jimmy", "--why=Playing video", "sleep", "infinity"]))
+        let watch = format!("while kill -0 {} 2>/dev/null; do sleep 2; done", std::process::id());
+        spawn("gnome-session-inhibit", &["--inhibit", "idle:suspend", "--reason", "jimmy is open", "--app-id", "jimmy", "sh", "-c", &watch])
+            .or_else(|| spawn("systemd-inhibit", &["--what=idle:sleep", "--who=jimmy", "--why=jimmy is open", "sh", "-c", &watch]))
     }
 
     #[cfg(target_os = "macos")]
     pub fn start() -> Option<Child> {
-        spawn("caffeinate", &["-d"])
+        // -w: caffeinate exits by itself when jimmy does.
+        spawn("caffeinate", &["-d", "-w", &std::process::id().to_string()])
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]

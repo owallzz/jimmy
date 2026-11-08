@@ -126,6 +126,7 @@ impl App {
         let first = self.scroll.floor() as usize;
 
         let p_rows = p.with_clip_rect(rows_rect);
+        let mut hovered = None;
         for (vis_i, idx) in (first..n.min(first + visible + 1)).enumerate() {
             let item = &self.items[idx];
             let top = rows_rect.top() + vis_i as f32 * ROW_H;
@@ -169,13 +170,17 @@ impl App {
                     }
                 }
                 if show_len {
-                    let len = h.filter(|h| h.duration > 0.0).map(|h| fmt_time(h.duration)).unwrap_or_else(|| "—".into());
+                    let d = item.duration();
+                    let len = if d > 0.0 { fmt_time(d) } else { "—".into() };
                     text(&p_rows, pos2(c_len, y), Align2::RIGHT_CENTER, len, 15.0, dimc);
                 }
                 text(&p_rows, pos2(c_size, y), Align2::RIGHT_CENTER, fmt_size(item.entry.size), 15.0, dimc);
             }
 
             let resp = ui.interact(r.intersect(rows_rect), ui.scope_id().with(("row", idx)), Sense::CLICK);
+            if resp.hovered() {
+                hovered = Some(idx);
+            }
             if resp.clicked() {
                 self.focus = idx;
             }
@@ -184,6 +189,7 @@ impl App {
                 out.push(Action::Accept);
             }
         }
+        self.hover_item = hovered;
         let empty_msg = if self.loading && n == 0 {
             Some("Reading folder…".to_string())
         } else if let Some(e) = &self.list_error {
@@ -231,6 +237,7 @@ impl App {
         let mut out = Vec::new();
         p.rect_filled(r, 0.0, pal.panel);
         let Some(item) = self.items.get(self.focus).cloned() else { return out };
+        let in_library = self.in_library(&item.entry.path);
         let x = r.left() + PAD;
         let inner = r.width() - PAD * 2.0;
         let mut y = r.top() + 18.0;
@@ -274,24 +281,32 @@ impl App {
             kv("Path", &[(item.entry.path.display().to_string(), pal.dim)]);
         } else {
             let h = item.hist.clone().unwrap_or_default();
+            let duration = item.duration();
+            // Metadata is read in the background after a short pause on a library file.
+            let reading = item.meta.is_none()
+                && duration <= 0.0
+                && in_library
+                && !self.probe_failed.contains(&item.entry.path);
             kv("File", &[(item.entry.name.clone(), pal.dim)]);
             if !matches!(self.source, Source::Dir(_)) {
                 if let Some(parent) = item.entry.path.parent() {
                     kv("Folder", &[(parent.display().to_string(), pal.dim)]);
                 }
             }
-            if h.duration > 0.0 {
+            if duration > 0.0 {
                 let from = if h.resumable() { h.pos } else { 0.0 };
-                let left = h.duration - from;
+                let left = duration - from;
                 let ends = clock_at(now_unix() + left.round() as i64);
-                let mut v = vec![(fmt_time(h.duration), pal.text), (" · ".into(), pal.dim)];
+                let mut v = vec![(fmt_time(duration), pal.text), (" · ".into(), pal.dim)];
                 if h.resumable() {
                     v.push((format!("{} left · ", fmt_dur_short(left)), pal.dim));
                 }
                 v.push((format!("ends {ends}"), pal.accent));
                 kv("Length", &v);
+            } else if reading {
+                kv("Length", &[("reading…".into(), pal.faint)]);
             } else {
-                kv("Length", &[("after first play".into(), pal.faint)]);
+                kv("Length", &[("—".into(), pal.faint)]);
             }
             if h.resumable() {
                 kv("Stopped at", &[(fmt_time(h.pos), pal.text)]);
@@ -299,20 +314,26 @@ impl App {
             if h.watched {
                 kv("Status", &[("watched".into(), pal.ok)]);
             }
+            if let Some(m) = &item.meta {
+                if let Some(v) = &m.video {
+                    kv("Video", &[(v.clone(), pal.text)]);
+                }
+                if m.audio_tracks > 0 {
+                    let n = if m.audio_tracks == 1 { "1 track".to_string() } else { format!("{} tracks", m.audio_tracks) };
+                    let langs = if m.audio_langs.is_empty() { String::new() } else { format!(" · {}", m.audio_langs.join(", ")) };
+                    kv("Audio", &[(format!("{n}{langs}"), pal.text)]);
+                }
+            }
             kv("Size", &[(fmt_size(item.entry.size), pal.text)]);
             kv("Container", &[(item.entry.ext(), pal.text)]);
-            let subs = if item.entry.subs.is_empty() { "—".to_string() } else { item.entry.subs.join(", ") };
+            let mut subs: Vec<String> = item.entry.subs.clone();
+            if let Some(n) = item.meta.as_ref().map(|m| m.sub_tracks).filter(|n| *n > 0) {
+                subs.push(format!("{n} embedded"));
+            }
+            let subs = if subs.is_empty() { "—".to_string() } else { subs.join(", ") };
             kv("Subtitles", &[(subs, pal.text)]);
             if let Some(m) = item.entry.modified {
                 kv("Modified", &[(local_date(m), pal.text)]);
-            }
-            if h.duration <= 0.0 {
-                y += 8.0;
-                let note = "// Not played yet. jimmy doesn't open files just to list them, so slow disks stay fast. Length and end time fill in after the first play.";
-                let nr = Rect::from_min_size(pos2(x, y), vec2(inner, 10.0));
-                let galley_h = draw::text_wrap(&p, pos2(x + 12.0, y + 10.0), inner - 24.0, note, 13.0, pal.faint, 6);
-                p.rect_filled(Rect::from_min_size(nr.min, vec2(inner, galley_h + 20.0)), 0.0, pal.bg);
-                draw::text_wrap(&p, pos2(x + 12.0, y + 10.0), inner - 24.0, note, 13.0, pal.faint, 6);
             }
         }
 
