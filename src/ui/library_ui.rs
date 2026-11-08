@@ -1,4 +1,4 @@
-//! Fix Match (pick the right TMDB show/movie) and "Movies or TV Shows?" for new libraries.
+//! Fix Match (pick the right show/movie) and "Movies or TV Shows?" for new libraries.
 
 use super::draw::*;
 use super::{App, FixMatch, Overlay};
@@ -10,6 +10,7 @@ impl App {
     // ------------------------------------------------------------------ Fix Match
 
     /// Fix Match (M, or from the palette) on the selected show/movie, or what's playing.
+    /// Shows search TVmaze, movies search Wikipedia.
     pub(crate) fn open_fix_match(&mut self) {
         let key = match self.screen {
             super::Screen::Player => self.playing_key(),
@@ -88,7 +89,7 @@ impl App {
                 let Some(c) = f.results.get(f.focus - 1).cloned() else { return };
                 let Some(req) = self.match_req(&f.key) else { return };
                 let s = self.scrape_settings();
-                self.scraper.job(crate::scrape::Job::Apply { req, tmdb: c.tmdb }, s);
+                self.scraper.job(crate::scrape::Job::Apply { req, id: c.id.clone() }, s);
                 if let Some(f) = self.fix.as_mut() {
                     f.busy = true;
                 }
@@ -115,9 +116,9 @@ impl App {
         p.rect_filled(r, 0.0, pal.panel);
         let it = self.db.item(&f.key).cloned().unwrap_or_default();
         let x = r.left() + 20.0;
-        text(&p, pos2(x, r.top() + 20.0), Align2::LEFT_CENTER, if f.show { "FIX MATCH · TV SHOW" } else { "FIX MATCH · MOVIE" }, 11.0, pal.faint);
-        let now = match it.tmdb {
-            Some(id) => format!("Now: {} (TMDB {id})", it.name()),
+        text(&p, pos2(x, r.top() + 20.0), Align2::LEFT_CENTER, if f.show { "FIX MATCH · TV SHOW · TVMAZE" } else { "FIX MATCH · MOVIE · WIKIPEDIA" }, 11.0, pal.faint);
+        let now = match &it.id {
+            Some(id) => format!("Now: {} ({id})", it.name()),
             None if !it.info.source.is_empty() => format!("Now: {} (from {})", it.name(), it.info.source),
             None => format!("Now: {} (not matched)", it.name()),
         };
@@ -160,7 +161,7 @@ impl App {
         for (i, c) in f.results.iter().enumerate().skip(first).take(visible) {
             let rr = Rect::from_min_size(pos2(r.left(), y), vec2(w, row_h));
             let focused = f.focus == i + 1;
-            let current = it.tmdb == Some(c.tmdb);
+            let current = it.id.as_deref() == Some(c.id.as_str());
             if focused {
                 p.rect_filled(rr, 0.0, pal.accent);
             }
@@ -173,7 +174,8 @@ impl App {
             if current {
                 text(&p, pos2(tr.right() + 10.0, rr.top() + 17.0), Align2::LEFT_CENTER, "CURRENT", 10.0, if focused { pal.ink } else { pal.ok });
             }
-            text(&p, pos2(rr.right() - 20.0, rr.top() + 17.0), Align2::RIGHT_CENTER, format!("TMDB {}", c.tmdb), 11.0, dimc);
+            let src = if c.id.starts_with("tvmaze") { "TVmaze" } else { "Wikipedia" };
+            text(&p, pos2(rr.right() - 20.0, rr.top() + 17.0), Align2::RIGHT_CENTER, src, 11.0, dimc);
             let ov: String = c.overview.chars().take(160).collect();
             text_clip(&p, pos2(x, rr.top() + 37.0), w - 40.0, &ov, 12.0, dimc);
             if ui.interact(rr, ui.scope_id().with(("fixr", i)), Sense::CLICK).clicked() {

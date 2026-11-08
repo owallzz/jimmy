@@ -36,7 +36,7 @@ impl App {
             year: item.as_ref().and_then(|i| i.info.year.or(i.year)),
             season: ep.as_ref().map(|e| e.season).filter(|s| *s < 1900),
             episode: ep.as_ref().map(|e| e.episode).filter(|_| ep.as_ref().is_some_and(|e| e.season < 1900)),
-            tmdb: item.as_ref().and_then(|i| i.tmdb),
+            imdb: item.as_ref().and_then(|i| i.info.imdb.clone()),
             is_episode: ep.is_some(),
         };
         self.sub_dl = Some(SubDl { video, busy: true, ..Default::default() });

@@ -149,12 +149,7 @@ impl App {
                 v.push(Row::AddRoot);
                 v.push(Row::Opt(Opt::Resume, "Resume where I stopped"));
                 v.push(Row::Opt(Opt::OnlineMeta, "Download posters and info"));
-                let tmdb = if self.cfg.tmdb_api_key.trim().is_empty() {
-                    "not set: shows only (TVmaze). Add tmdb_api_key to config.toml for movies".to_string()
-                } else {
-                    "set: movies and shows".to_string()
-                };
-                v.push(Row::Info("TMDB key".into(), tmdb));
+                v.push(Row::Info("Info from".into(), "TVmaze (shows) · Wikipedia + Wikidata (movies)".into()));
                 v.push(Row::RefreshMeta);
                 v.push(Row::ClearHistory);
                 v

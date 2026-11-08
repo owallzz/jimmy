@@ -1,7 +1,7 @@
 //! Subtitles on demand from OpenSubtitles.com (needs a free API key: `opensubtitles_api_key`).
 //!
 //! Searches by the file's OpenSubtitles hash (exact release match) plus title / season /
-//! episode / TMDB ID. Downloaded files are kept in `<data>/subtitles/<file id>/` and added
+//! episode / IMDb ID. Downloaded files are kept in `<data>/subtitles/<file id>/` and added
 //! again whenever that video is played.
 
 use serde::{Deserialize, Serialize};
@@ -19,8 +19,8 @@ pub struct Query {
     pub year: Option<u32>,
     pub season: Option<u32>,
     pub episode: Option<u32>,
-    /// The movie's TMDB ID, or the show's for episodes.
-    pub tmdb: Option<u64>,
+    /// The movie's IMDb ID, or the show's for episodes ("tt0303461").
+    pub imdb: Option<String>,
     pub is_episode: bool,
 }
 
@@ -122,9 +122,11 @@ pub fn search(q: &Query, key: &str) -> Result<Vec<Found>, String> {
     if let Some(h) = hash(&q.path) {
         params.push(("moviehash".into(), h));
     }
-    match (q.is_episode, q.tmdb) {
-        (true, Some(id)) => params.push(("parent_tmdb_id".into(), id.to_string())),
-        (false, Some(id)) => params.push(("tmdb_id".into(), id.to_string())),
+    // IMDb IDs go without the "tt" and leading zeros.
+    let imdb = q.imdb.as_deref().map(|i| i.trim_start_matches("tt").trim_start_matches('0').to_string()).filter(|i| !i.is_empty());
+    match (q.is_episode, imdb) {
+        (true, Some(id)) => params.push(("parent_imdb_id".into(), id)),
+        (false, Some(id)) => params.push(("imdb_id".into(), id)),
         _ => params.push(("query".into(), q.title.to_lowercase())),
     }
     if let Some(s) = q.season {

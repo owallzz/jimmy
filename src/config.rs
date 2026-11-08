@@ -99,10 +99,9 @@ pub struct Config {
     pub autoplay_countdown: u32,
     /// Movies, TV shows and other flat lists as a poster grid instead of a list.
     pub grid_view: bool,
-    /// Look up posters, titles and descriptions online (TVmaze, and TMDB with a key).
+    /// Look up posters, titles and descriptions online (TVmaze for shows, Wikipedia and
+    /// Wikidata for movies; no keys needed).
     pub online_metadata: bool,
-    /// TMDB API key (v3 key or v4 read token) for movie metadata. Optional.
-    pub tmdb_api_key: String,
     /// OpenSubtitles.com API key, for downloading subtitles on demand. Optional.
     pub opensubtitles_api_key: String,
     /// Subtitle languages to download, comma-separated codes ("en", "en,es").
@@ -206,7 +205,6 @@ impl Default for Config {
             autoplay_countdown: 10,
             grid_view: false,
             online_metadata: true,
-            tmdb_api_key: String::new(),
             opensubtitles_api_key: String::new(),
             sub_languages: "en".into(),
             mpv_options: HashMap::new(),

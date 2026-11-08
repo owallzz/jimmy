@@ -40,7 +40,7 @@ pub enum Overlay {
     Settings,
     /// "Add to playlist" picker.
     AddToPlaylist,
-    /// Fix Match: search TMDB and pick the right show/movie.
+    /// Fix Match: search TVmaze (shows) or Wikipedia (movies) and pick the right one.
     FixMatch,
     /// "Movies or TV Shows?" when adding a library folder.
     LibraryKind,
@@ -775,7 +775,7 @@ impl App {
     }
 
     fn scrape_settings(&self) -> crate::scrape::Settings {
-        crate::scrape::Settings { online: self.cfg.online_metadata, tmdb_key: self.cfg.tmdb_api_key.clone() }
+        crate::scrape::Settings { online: self.cfg.online_metadata }
     }
 
     /// The episode a file is: from the library database, else guessed from its name.
@@ -845,8 +845,8 @@ impl App {
         let mut changed = false;
         for done in self.scraper.poll() {
             match done {
-                crate::scrape::Done::Matched { key, tmdb, info, manual } => {
-                    let new_key = self.db.apply_match(&key, tmdb, info, manual);
+                crate::scrape::Done::Matched { key, id, info, manual } => {
+                    let new_key = self.db.apply_match(&key, id, info, manual);
                     if let Source::Show(k) = &self.source {
                         if *k == key {
                             self.source = Source::Show(new_key.clone());

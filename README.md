@@ -101,12 +101,12 @@ The clock is 12-hour by default; switch to 24-hour in Settings → General.
   (`- pt1`, `cd2`).
 - **Movie libraries:** one movie per `Title (Year)` folder or per file; split movies play
   their parts back to back.
-- **Matching:** TMDB for movies and shows (free key: `tmdb_api_key = "…"` in `config.toml`).
-  Without a key, shows use TVmaze and movies use local files only. Local `tvshow.nfo`,
-  `movie.nfo`, `poster.jpg`, `fanart.jpg` and `season01-poster.jpg` are used first.
-  Everything lands in `library.json`, keyed by TMDB ID. The libraries are rescanned in the
+- **Matching, no API keys:** shows from TVmaze; movies from Wikipedia (summary, poster) and
+  Wikidata (year, genres, IMDb ID). Local `tvshow.nfo`, `movie.nfo`, `poster.jpg`,
+  `fanart.jpg` and `season01-poster.jpg` are used first. Everything lands in
+  `library.json`, keyed by TVmaze / Wikidata ID. The libraries are rescanned in the
   background (at startup and every 10 minutes) so new files appear on their own.
-- **Fix Match** (M, or from the palette): search TMDB and pick the right show or movie; your
+- **Fix Match** (M, or from the palette): search TVmaze or Wikipedia and pick the right one; your
   pick sticks.
 - **Art:** posters, season posters, episode thumbnails and background art, downloaded only
   when shown and shrunk once. A show's page in grid view is a wall of episode thumbnails.

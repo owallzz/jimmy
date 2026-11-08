@@ -1,6 +1,7 @@
 //! The matched library: shows, movies and files, saved in `<data>/library.json`.
 //!
-//! Shows and movies are keyed by their TMDB ID once matched (`tv:1396`, `movie:949`), and by
+//! Shows and movies are keyed by their online ID once matched (`tv:tvmaze-83`,
+//! `movie:wikidata-Q42198`), and by
 //! their folder or file until then (`dir:/tv/Firefly`, `file:/movies/Heat.mkv`). Each file
 //! remembers its size, mtime, when it was added, and which show/episode or movie it is.
 //! A background scan (`library::list_all`) feeds [`Db::merge`], which adds new files, drops
@@ -40,7 +41,8 @@ pub struct Item {
     /// Show folders (several if they matched the same show) or a movie's folder.
     pub folders: Vec<PathBuf>,
     pub state: MatchState,
-    pub tmdb: Option<u64>,
+    /// Online ID once matched: "tvmaze:83" or "wikidata:Q42198".
+    pub id: Option<String>,
     pub info: Info,
 }
 
@@ -250,9 +252,9 @@ impl Db {
         (key, None, part)
     }
 
-    /// Stores a match. With a TMDB ID the record moves to `tv:ID` / `movie:ID` (merging with a
+    /// Stores a match. With an online ID the record moves to `tv:…` / `movie:…` (merging with a
     /// record already there), and its files follow.
-    pub fn apply_match(&mut self, key: &str, tmdb: Option<u64>, info: Info, manual: bool) -> String {
+    pub fn apply_match(&mut self, key: &str, id: Option<String>, info: Info, manual: bool) -> String {
         let show = self.is_show(key);
         let table = if show { &mut self.shows } else { &mut self.movies };
         let Some(mut it) = table.remove(key) else { return key.to_string() };
@@ -262,10 +264,10 @@ impl Db {
         }
         let found = !info.title.is_empty() || info.poster.is_some();
         it.state = if manual { MatchState::Manual } else if found { MatchState::Auto } else { MatchState::NotFound };
-        it.tmdb = tmdb.or(it.tmdb);
+        it.id = id.clone().or(it.id);
         it.info = info;
-        let new_key = match tmdb {
-            Some(id) => format!("{}:{id}", if show { "tv" } else { "movie" }),
+        let new_key = match &id {
+            Some(id) => format!("{}:{}", if show { "tv" } else { "movie" }, id.replace(':', "-")),
             None => key.to_string(),
         };
         if let Some(existing) = table.get_mut(&new_key).filter(|_| new_key != key) {
@@ -411,12 +413,12 @@ mod tests {
         let parts = db.movie_parts(&mov.join("Heat (1995)/Heat.1995.cd2.mkv"));
         assert_eq!(parts.len(), 2);
         let info = Info { title: "Firefly".into(), ..Default::default() };
-        let nk = db.apply_match(&key, Some(1437), info, false);
-        assert_eq!(nk, "tv:1437");
-        assert!(db.files.values().filter(|f| f.ep.is_some()).all(|f| f.item == "tv:1437"));
+        let nk = db.apply_match(&key, Some("tvmaze:180".into()), info, false);
+        assert_eq!(nk, "tv:tvmaze-180");
+        assert!(db.files.values().filter(|f| f.ep.is_some()).all(|f| f.item == "tv:tvmaze-180"));
         // A rescan keeps the match.
         db.merge(&[e("/tv/Firefly (2002) {tmdb-1437}/Season 1/Firefly - S01E03.mkv")], &libs, 2000);
-        assert!(db.shows.contains_key("tv:1437"));
+        assert!(db.shows.contains_key("tv:tvmaze-180"));
         assert_eq!(db.files.len(), 1);
         std::fs::remove_dir_all(root).unwrap();
     }

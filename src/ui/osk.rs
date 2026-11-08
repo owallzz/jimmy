@@ -187,7 +187,7 @@ impl App {
         let (label, typed) = match osk.target {
             OskTarget::Filter => ("SEARCH", self.filter.clone()),
             OskTarget::Palette => ("COMMAND", self.palette_query.clone()),
-            OskTarget::FixMatch => ("SEARCH TMDB", self.fix.as_ref().map(|f| f.query.clone()).unwrap_or_default()),
+            OskTarget::FixMatch => ("SEARCH", self.fix.as_ref().map(|f| f.query.clone()).unwrap_or_default()),
         };
         let ty = r.top() + pad + 15.0;
         let lr = text(&p, pos2(r.left() + pad, ty), Align2::LEFT_CENTER, label, 11.0, pal.faint);

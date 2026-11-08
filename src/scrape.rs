@@ -1,10 +1,10 @@
 //! Posters, art, titles and descriptions for shows and movies, and Fix Match searches.
 //!
-//! Local files come first and need no network: Kodi/Jellyfin/Plex-style `tvshow.nfo`,
+//! No API keys anywhere. Local files come first: Kodi/Jellyfin/Plex-style `tvshow.nfo`,
 //! `movie.nfo` / `<name>.nfo`, `poster.jpg` / `folder.jpg`, `fanart.jpg` / `background.jpg`
-//! and `season01-poster.jpg` next to the media. Online: TMDB for movies and shows (needs
-//! `tmdb_api_key`); without a key, shows still get TVmaze. Folder ID hints (`{tmdb-…}`,
-//! `{tvdb-…}`, `{imdb-…}`) skip the search. Requests go through the system `curl`.
+//! and `season01-poster.jpg` next to the media. Online: shows from TVmaze; movies from
+//! Wikipedia (summary and poster) and Wikidata (year, genres, IMDb ID). Folder ID hints
+//! (`{tvdb-…}`, `{imdb-…}`, `{tmdb-…}`) skip the search. Requests go through the system `curl`.
 //!
 //! Two idle-priority threads: one matches and fetches details, the other downloads images
 //! only when they're about to be shown (posters, season posters, episode stills, backdrops)
@@ -45,7 +45,9 @@ pub struct Info {
     /// Image sources: a URL or a local file. `Db::image` gives the downloaded thumbnail.
     pub poster: Option<String>,
     pub backdrop: Option<String>,
-    /// Where it came from: "local", "TMDB", "TVmaze".
+    /// IMDb ID ("tt0113277"), for subtitle searches.
+    pub imdb: Option<String>,
+    /// Where it came from: "local", "TVmaze", "Wikipedia".
     pub source: String,
     pub seasons: BTreeMap<u32, SeasonInfo>,
     /// "season x episode" → details.
@@ -76,7 +78,8 @@ pub struct MatchReq {
 /// A Fix Match search result.
 #[derive(Clone, Debug)]
 pub struct Candidate {
-    pub tmdb: u64,
+    /// "tvmaze:123" or "wikidata:Q42198".
+    pub id: String,
     pub title: String,
     pub year: Option<u32>,
     pub overview: String,
@@ -93,8 +96,8 @@ pub enum Job {
     Match(MatchReq),
     /// Fix Match: search by title (shows or movies).
     Search { show: bool, query: String, year: Option<u32> },
-    /// Fix Match: use this TMDB result.
-    Apply { req: MatchReq, tmdb: u64 },
+    /// Fix Match: use this result (a `Candidate::id`).
+    Apply { req: MatchReq, id: String },
     /// Subtitles: search OpenSubtitles for a video.
     SubSearch { query: crate::subs::Query, key: String },
     /// Subtitles: download one result.
@@ -102,7 +105,7 @@ pub enum Job {
 }
 
 pub enum Done {
-    Matched { key: String, tmdb: Option<u64>, info: Info, manual: bool },
+    Matched { key: String, id: Option<String>, info: Info, manual: bool },
     Results { query: String, list: Vec<Candidate>, error: Option<String> },
     Image { src: String, path: Option<PathBuf> },
     SubResults { video: PathBuf, result: Result<Vec<crate::subs::Found>, String> },
@@ -112,7 +115,6 @@ pub enum Done {
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub online: bool,
-    pub tmdb_key: String,
 }
 
 pub fn posters_dir() -> PathBuf {
@@ -141,19 +143,19 @@ impl Scraper {
                 while let Ok((job, s)) = job_rx.recv() {
                     let done = match job {
                         Job::Match(req) => {
-                            let (tmdb, info) = lookup(&req, &s);
-                            Done::Matched { key: req.key, tmdb, info, manual: false }
+                            let (id, info) = lookup(&req, &s);
+                            Done::Matched { key: req.key, id, info, manual: false }
                         }
                         Job::Search { show, query, year } => {
                             let r = search(show, &query, year, &s);
                             let error = r.is_err().then(|| r.clone().err().unwrap_or_default());
                             Done::Results { query, list: r.unwrap_or_default(), error }
                         }
-                        Job::Apply { req, tmdb } => {
+                        Job::Apply { req, id } => {
                             let local = local(&req).unwrap_or_default();
-                            let online = if req.show { tmdb_tv(tmdb, s.tmdb_key.trim()) } else { tmdb_movie(tmdb, s.tmdb_key.trim()) };
+                            let online = by_id(&id);
                             let info = online.map(|o| merge(local.clone(), o)).unwrap_or(local);
-                            Done::Matched { key: req.key, tmdb: Some(tmdb), info: stamp(info), manual: true }
+                            Done::Matched { key: req.key, id: Some(id), info: stamp(info), manual: true }
                         }
                         Job::SubSearch { query, key } => Done::SubResults { video: query.path.clone(), result: crate::subs::search(&query, &key) },
                         Job::SubDownload { video, found, key } => {
@@ -216,26 +218,27 @@ fn stamp(mut info: Info) -> Info {
     info
 }
 
-/// Local files, then TMDB (by ID hint, else search) or TVmaze for shows without a key.
-fn lookup(req: &MatchReq, s: &Settings) -> (Option<u64>, Info) {
+/// Local files, then TVmaze (shows) or Wikipedia/Wikidata (movies), by ID hint or search.
+fn lookup(req: &MatchReq, s: &Settings) -> (Option<String>, Info) {
     let mut info = local(req).unwrap_or_default();
-    let mut tmdb = None;
+    let mut id = None;
     let has_local_meta = !info.title.is_empty() && info.poster.is_some();
     if s.online && !has_local_meta {
-        let key = s.tmdb_key.trim();
-        if !key.is_empty() {
-            tmdb = req.tmdb.or_else(|| find_id(req, key)).or_else(|| search(req.show, &req.title, req.year, s).ok()?.first().map(|c| c.tmdb));
-            let online = tmdb.and_then(|id| if req.show { tmdb_tv(id, key) } else { tmdb_movie(id, key) });
-            if let Some(o) = online {
-                info = merge(info, o);
-            }
-        } else if req.show {
-            if let Some(o) = tvmaze(&req.title, req.tvdb, req.imdb.as_deref()) {
-                info = merge(info, o);
-            }
+        id = if req.show { find_show(req) } else { find_movie(req) };
+        if let Some(o) = id.as_deref().and_then(by_id) {
+            info = merge(info, o);
         }
     }
-    (tmdb, stamp(info))
+    (id, stamp(info))
+}
+
+/// Details for a `Candidate::id`.
+fn by_id(id: &str) -> Option<Info> {
+    match id.split_once(':')? {
+        ("tvmaze", n) => tvmaze_show(n.parse().ok()?),
+        ("wikidata", q) => wiki_movie(q),
+        _ => None,
+    }
 }
 
 /// Local values win; online fills the gaps.
@@ -263,6 +266,7 @@ fn merge(local: Info, online: Info) -> Info {
         genres: if local.genres.is_empty() { online.genres } else { local.genres },
         poster: local.poster.or(online.poster),
         backdrop: local.backdrop.or(online.backdrop),
+        imdb: local.imdb.or(online.imdb),
         source,
         seasons,
         episodes,
@@ -387,7 +391,8 @@ fn urlencode(s: &str) -> String {
 
 fn curl(url: &str, headers: &[String]) -> Option<Vec<u8>> {
     let mut cmd = std::process::Command::new("curl");
-    cmd.args(["-fsSL", "--max-time", "20", "--proto", "=https", "-A", concat!("jimmy/", env!("CARGO_PKG_VERSION"))]);
+    // Wikimedia asks for a User-Agent that names the app and where it lives.
+    cmd.args(["-fsSL", "--max-time", "20", "--proto", "=https", "-A", concat!("jimmy/", env!("CARGO_PKG_VERSION"), " (media player; https://github.com/owallzz/jimmy)")]);
     for h in headers {
         cmd.args(["-H", h]);
     }
@@ -404,134 +409,77 @@ fn json(url: &str, headers: &[String]) -> Option<serde_json::Value> {
 }
 
 
-// ------------------------------------------------------------------ TMDB
-
-const IMG: &str = "https://image.tmdb.org/t/p/";
-
-/// GET a TMDB v3 path. A v4 "read access token" (a long JWT) goes in a header, a v3 key in
-/// the URL.
-fn tmdb(path: &str, key: &str) -> Option<serde_json::Value> {
-    let sep = if path.contains('?') { '&' } else { '?' };
-    if key.len() > 40 {
-        json(&format!("https://api.themoviedb.org/3{path}"), &[format!("Authorization: Bearer {key}")])
-    } else {
-        json(&format!("https://api.themoviedb.org/3{path}{sep}api_key={}", urlencode(key)), &[])
-    }
-}
-
-fn img(path: &serde_json::Value, size: &str) -> Option<String> {
-    path.as_str().filter(|p| !p.is_empty()).map(|p| format!("{IMG}{size}{p}"))
-}
-
-fn year_of(v: &serde_json::Value) -> Option<u32> {
-    v.as_str().and_then(|d| d.get(..4)?.parse().ok())
-}
+// ------------------------------------------------------------------ search (Fix Match)
 
 fn st(v: &serde_json::Value) -> String {
     v.as_str().unwrap_or("").to_string()
 }
 
-/// TVDB/IMDb ID hint → TMDB ID.
-fn find_id(req: &MatchReq, key: &str) -> Option<u64> {
-    let (id, source) = match (&req.tvdb, &req.imdb) {
-        (Some(t), _) => (t.to_string(), "tvdb_id"),
-        (None, Some(i)) => (i.clone(), "imdb_id"),
-        _ => return None,
-    };
-    let v = tmdb(&format!("/find/{}?external_source={source}", urlencode(&id)), key)?;
-    let list = if req.show { &v["tv_results"] } else { &v["movie_results"] };
-    list.as_array()?.first()?["id"].as_u64()
+fn year_of(v: &serde_json::Value) -> Option<u32> {
+    v.as_str().and_then(|d| d.trim_start_matches('+').get(..4)?.parse().ok())
+}
+
+/// First plausible year in a text ("1995 crime drama film by Michael Mann" → 1995).
+fn year_in(s: &str) -> Option<u32> {
+    s.split(|c: char| !c.is_ascii_digit()).filter(|w| w.len() == 4).filter_map(|w| w.parse().ok()).find(|y| (1880..=2100).contains(y))
 }
 
 fn search(show: bool, query: &str, year: Option<u32>, s: &Settings) -> Result<Vec<Candidate>, String> {
-    let key = s.tmdb_key.trim();
-    if key.is_empty() {
-        return Err("Fix Match needs a TMDB key (tmdb_api_key in config.toml)".into());
+    if !s.online {
+        return Err("Online lookups are off (Settings → Library)".into());
     }
-    let (kind, yp, title_f, date_f) = if show { ("tv", "first_air_date_year", "name", "first_air_date") } else { ("movie", "year", "title", "release_date") };
-    let year_q = year.map(|y| format!("&{yp}={y}")).unwrap_or_default();
-    let v = tmdb(&format!("/search/{kind}?query={}{year_q}", urlencode(query)), key).ok_or("TMDB didn't answer (offline?)")?;
-    let mut list: Vec<Candidate> = v["results"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|r| Some(Candidate { tmdb: r["id"].as_u64()?, title: st(&r[title_f]), year: year_of(&r[date_f]), overview: st(&r["overview"]) }))
-        .collect();
-    // With a year, an exact-year result beats a more popular one.
+    let mut list = if show { tvmaze_search(query) } else { wiki_search(query, year) }.ok_or("No answer (offline?)")?;
     if let Some(y) = year {
-        list.sort_by_key(|c| c.year != Some(y));
+        list.sort_by_key(|c| c.year.map(|cy| cy.abs_diff(y)).unwrap_or(99));
     }
     Ok(list)
 }
 
-fn genres(v: &serde_json::Value) -> Vec<String> {
-    v["genres"].as_array().into_iter().flatten().filter_map(|g| g["name"].as_str().map(String::from)).collect()
+// ------------------------------------------------------------------ TVmaze (shows)
+
+const TVMAZE_EMBED: &str = "embed[]=episodes&embed[]=seasons&embed[]=images";
+
+fn tvmaze_search(query: &str) -> Option<Vec<Candidate>> {
+    let v = json(&format!("https://api.tvmaze.com/search/shows?q={}", urlencode(query)), &[])?;
+    Some(
+        v.as_array()?
+            .iter()
+            .filter_map(|r| {
+                let s = &r["show"];
+                Some(Candidate { id: format!("tvmaze:{}", s["id"].as_u64()?), title: st(&s["name"]), year: year_of(&s["premiered"]), overview: strip_html(&st(&s["summary"])) })
+            })
+            .collect(),
+    )
 }
 
-fn tmdb_movie(id: u64, key: &str) -> Option<Info> {
-    let m = tmdb(&format!("/movie/{id}"), key)?;
-    Some(Info {
-        title: st(&m["title"]),
-        year: year_of(&m["release_date"]),
-        overview: st(&m["overview"]),
-        rating: m["vote_average"].as_f64().filter(|r| *r > 0.0).map(|r| r as f32),
-        genres: genres(&m),
-        poster: img(&m["poster_path"], "w342"),
-        backdrop: img(&m["backdrop_path"], "w1280"),
-        source: "TMDB".into(),
-        ..Default::default()
-    })
-}
-
-/// Show details plus every season's episodes (20 seasons per request).
-fn tmdb_tv(id: u64, key: &str) -> Option<Info> {
-    let v = tmdb(&format!("/tv/{id}"), key)?;
-    let mut info = Info {
-        title: st(&v["name"]),
-        year: year_of(&v["first_air_date"]),
-        overview: st(&v["overview"]),
-        rating: v["vote_average"].as_f64().filter(|r| *r > 0.0).map(|r| r as f32),
-        genres: genres(&v),
-        poster: img(&v["poster_path"], "w342"),
-        backdrop: img(&v["backdrop_path"], "w1280"),
-        source: "TMDB".into(),
-        ..Default::default()
-    };
-    let numbers: Vec<u64> = v["seasons"].as_array().into_iter().flatten().filter_map(|s| s["season_number"].as_u64()).collect();
-    for s in v["seasons"].as_array().into_iter().flatten() {
-        let Some(n) = s["season_number"].as_u64() else { continue };
-        info.seasons.insert(n as u32, SeasonInfo { name: st(&s["name"]), overview: st(&s["overview"]), poster: img(&s["poster_path"], "w342") });
-    }
-    for chunk in numbers.chunks(20) {
-        let append: Vec<String> = chunk.iter().map(|n| format!("season/{n}")).collect();
-        let Some(d) = tmdb(&format!("/tv/{id}?append_to_response={}", append.join(",")), key) else { continue };
-        for n in chunk {
-            for e in d[format!("season/{n}")]["episodes"].as_array().into_iter().flatten() {
-                let Some(en) = e["episode_number"].as_u64() else { continue };
-                info.episodes.insert(
-                    ep_key(*n as u32, en as u32),
-                    EpInfo { title: st(&e["name"]), overview: st(&e["overview"]), aired: st(&e["air_date"]), still: img(&e["still_path"], "w300") },
-                );
-            }
+/// TVmaze ID for a show: by TVDB / IMDb hint (a TMDB hint goes through Wikidata), else the
+/// best name match (preferring the folder's year).
+fn find_show(req: &MatchReq) -> Option<String> {
+    let lookup = |q: String| json(&format!("https://api.tvmaze.com/lookup/shows?{q}"), &[]).and_then(|s| s["id"].as_u64());
+    let mut tvdb = req.tvdb;
+    let mut imdb = req.imdb.clone();
+    if let (None, None, Some(t)) = (tvdb, &imdb, req.tmdb) {
+        if let Some(e) = wikidata_by_claim("P4983", &t.to_string()).and_then(|q| wikidata_entity(&q)) {
+            tvdb = claim_str(&e, "P4835").and_then(|v| v.parse().ok());
+            imdb = claim_str(&e, "P345");
         }
     }
-    Some(info)
+    let by_hint = tvdb.and_then(|t| lookup(format!("thetvdb={t}"))).or_else(|| imdb.as_ref().and_then(|i| lookup(format!("imdb={}", urlencode(i)))));
+    if let Some(id) = by_hint {
+        return Some(format!("tvmaze:{id}"));
+    }
+    let mut list = tvmaze_search(&req.title)?;
+    if let Some(y) = req.year {
+        // Same score order otherwise; an exact year wins ("Doctor Who (2005)").
+        if let Some(i) = list.iter().position(|c| c.year == Some(y)) {
+            return Some(list.remove(i).id);
+        }
+    }
+    list.into_iter().next().map(|c| c.id)
 }
 
-// ------------------------------------------------------------------ TVmaze (shows, no key)
-
-fn tvmaze(name: &str, tvdb: Option<u64>, imdb: Option<&str>) -> Option<Info> {
-    let embed = "embed[]=episodes&embed[]=seasons&embed[]=images";
-    let v = match (tvdb, imdb) {
-        (Some(t), _) => json(&format!("https://api.tvmaze.com/lookup/shows?thetvdb={t}"), &[])
-            .and_then(|s| s["id"].as_u64())
-            .and_then(|id| json(&format!("https://api.tvmaze.com/shows/{id}?{embed}"), &[])),
-        (None, Some(i)) => json(&format!("https://api.tvmaze.com/lookup/shows?imdb={}", urlencode(i)), &[])
-            .and_then(|s| s["id"].as_u64())
-            .and_then(|id| json(&format!("https://api.tvmaze.com/shows/{id}?{embed}"), &[])),
-        _ => None,
-    }
-    .or_else(|| json(&format!("https://api.tvmaze.com/singlesearch/shows?q={}&{embed}", urlencode(name)), &[]))?;
+fn tvmaze_show(id: u64) -> Option<Info> {
+    let v = json(&format!("https://api.tvmaze.com/shows/{id}?{TVMAZE_EMBED}"), &[])?;
     let medium = |x: &serde_json::Value| x["image"]["medium"].as_str().map(String::from);
     let mut info = Info {
         title: st(&v["name"]),
@@ -540,6 +488,7 @@ fn tvmaze(name: &str, tvdb: Option<u64>, imdb: Option<&str>) -> Option<Info> {
         rating: v["rating"]["average"].as_f64().map(|r| r as f32),
         genres: v["genres"].as_array().into_iter().flatten().filter_map(|g| g.as_str().map(String::from)).collect(),
         poster: medium(&v),
+        imdb: v["externals"]["imdb"].as_str().map(String::from),
         source: "TVmaze".into(),
         ..Default::default()
     };
@@ -551,7 +500,128 @@ fn tvmaze(name: &str, tvdb: Option<u64>, imdb: Option<&str>) -> Option<Info> {
         let Some(n) = s["number"].as_u64() else { continue };
         info.seasons.insert(n as u32, SeasonInfo { name: st(&s["name"]), overview: strip_html(&st(&s["summary"])), poster: medium(s) });
     }
-    info.backdrop = v["_embedded"]["images"].as_array().into_iter().flatten().find(|i| i["type"] == "background").and_then(|i| i["resolutions"]["original"]["url"].as_str().map(String::from));
+    info.backdrop = v["_embedded"]["images"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|i| i["type"] == "background")
+        .and_then(|i| i["resolutions"]["medium"]["url"].as_str().or(i["resolutions"]["original"]["url"].as_str()).map(String::from));
+    Some(info)
+}
+
+// ------------------------------------------------------------------ Wikipedia + Wikidata (movies)
+
+/// QIDs of items with a property value, e.g. ("P345", "tt0113277") → ["Q42198"].
+fn wikidata_by_claim(prop: &str, value: &str) -> Option<String> {
+    let v = json(&format!("https://www.wikidata.org/w/api.php?action=query&list=search&srsearch=haswbstatement:{prop}={}&format=json", urlencode(value)), &[])?;
+    v["query"]["search"].as_array()?.first()?["title"].as_str().map(String::from)
+}
+
+fn wikidata_entity(qid: &str) -> Option<serde_json::Value> {
+    let v = json(&format!("https://www.wikidata.org/w/api.php?action=wbgetentities&ids={qid}&props=labels%7Cclaims%7Csitelinks%7Cdescriptions&languages=en%7Cmul&sitefilter=enwiki&format=json"), &[])?;
+    Some(v["entities"][qid].clone())
+}
+
+fn claim_str(e: &serde_json::Value, prop: &str) -> Option<String> {
+    e["claims"][prop].as_array()?.first()?["mainsnak"]["datavalue"]["value"].as_str().map(String::from)
+}
+
+/// Films matching a title on English Wikipedia (its search ranks far better than Wikidata's).
+fn wiki_search(query: &str, year: Option<u32>) -> Option<Vec<Candidate>> {
+    let q = match year {
+        Some(y) => format!("{query} {y} film"),
+        None => format!("{query} film"),
+    };
+    let v = json(&format!("https://en.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch={}&gsrlimit=10&prop=pageprops%7Cdescription&ppprop=wikibase_item&format=json&formatversion=2", urlencode(&q)), &[])?;
+    let mut pages: Vec<&serde_json::Value> = v["query"]["pages"].as_array()?.iter().collect();
+    pages.sort_by_key(|p| p["index"].as_u64().unwrap_or(99));
+    Some(
+        pages
+            .into_iter()
+            .filter_map(|p| {
+                let desc = st(&p["description"]);
+                // Films only ("1995 crime drama film by …"), not soundtracks or novels.
+                if !desc.to_lowercase().contains("film") || desc.to_lowercase().contains("soundtrack") {
+                    return None;
+                }
+                let qid = p["pageprops"]["wikibase_item"].as_str()?;
+                let title = st(&p["title"]);
+                let title = match title.rfind(" (") {
+                    Some(i) if title.ends_with(')') && title[i..].contains("film") => title[..i].to_string(),
+                    _ => title,
+                };
+                Some(Candidate { id: format!("wikidata:{qid}"), title, year: year_in(&desc), overview: desc })
+            })
+            .collect(),
+    )
+}
+
+/// Wikidata ID for a movie: by IMDb / TMDB hint, else the best Wikipedia search result.
+fn find_movie(req: &MatchReq) -> Option<String> {
+    let hinted = req.imdb.as_ref().and_then(|i| wikidata_by_claim("P345", i)).or_else(|| req.tmdb.and_then(|t| wikidata_by_claim("P4947", &t.to_string())));
+    if let Some(q) = hinted {
+        return Some(format!("wikidata:{q}"));
+    }
+    let list = wiki_search(&req.title, req.year)?;
+    let best = match req.year {
+        Some(y) => list.iter().find(|c| c.year == Some(y)).or_else(|| list.iter().find(|c| c.year.is_some_and(|cy| cy.abs_diff(y) <= 1))),
+        None => list.first(),
+    };
+    best.map(|c| c.id.clone())
+}
+
+fn wiki_movie(qid: &str) -> Option<Info> {
+    let e = wikidata_entity(qid)?;
+    let year = e["claims"]["P577"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| year_of(&c["mainsnak"]["datavalue"]["value"]["time"]))
+        .min();
+    // Genre labels ("crime drama film" → "Crime drama").
+    let genre_ids: Vec<String> = e["claims"]["P136"].as_array().into_iter().flatten().filter_map(|c| c["mainsnak"]["datavalue"]["value"]["id"].as_str().map(String::from)).take(4).collect();
+    let mut genres = Vec::new();
+    if !genre_ids.is_empty() {
+        if let Some(g) = json(&format!("https://www.wikidata.org/w/api.php?action=wbgetentities&ids={}&props=labels&languages=en%7Cmul&format=json", genre_ids.join("%7C")), &[]) {
+            for id in &genre_ids {
+                let gl = &g["entities"][id]["labels"];
+                if let Some(l) = gl["en"]["value"].as_str().or(gl["mul"]["value"].as_str()) {
+                    let l = l.trim_end_matches(" film").trim();
+                    let mut c = l.chars();
+                    genres.push(c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default());
+                }
+            }
+        }
+    }
+    // Names are in English, or (newer items) the language-neutral "mul" label.
+    let label = |v: &serde_json::Value| v["labels"]["en"]["value"].as_str().or(v["labels"]["mul"]["value"].as_str()).unwrap_or("").to_string();
+    let mut info = Info {
+        title: label(&e),
+        year,
+        genres,
+        imdb: claim_str(&e, "P345"),
+        source: "Wikipedia".into(),
+        ..Default::default()
+    };
+    // Summary paragraph and poster from the English article.
+    if let Some(page) = e["sitelinks"]["enwiki"]["title"].as_str() {
+        let page = page.replace(' ', "_");
+        if let Some(sum) = json(&format!("https://en.wikipedia.org/api/rest_v1/page/summary/{}", urlencode(&page).replace('+', "_")), &[]) {
+            info.overview = st(&sum["extract"]);
+            if info.title.is_empty() {
+                // "Alien (film)" → "Alien"
+                let t = st(&sum["title"]);
+                info.title = match t.rfind(" (") {
+                    Some(i) if t.ends_with(')') => t[..i].to_string(),
+                    _ => t,
+                };
+            }
+            info.poster = sum["originalimage"]["source"].as_str().or(sum["thumbnail"]["source"].as_str()).map(String::from);
+        }
+    }
+    if info.overview.is_empty() {
+        info.overview = st(&e["descriptions"]["en"]["value"]);
+    }
     Some(info)
 }
 
@@ -678,11 +748,11 @@ mod tests {
     }
 
     #[test]
-    fn tmdb_images_and_years() {
-        let v: serde_json::Value = serde_json::from_str(r#"{"poster_path":"/a.jpg","first_air_date":"2002-09-20","empty":""}"#).unwrap();
-        assert_eq!(img(&v["poster_path"], "w342").as_deref(), Some("https://image.tmdb.org/t/p/w342/a.jpg"));
-        assert_eq!(img(&v["empty"], "w342"), None);
-        assert_eq!(year_of(&v["first_air_date"]), Some(2002));
+    fn years() {
+        let v: serde_json::Value = serde_json::from_str(r#"{"a":"2002-09-20","b":"+1995-12-15T00:00:00Z"}"#).unwrap();
+        assert_eq!(year_of(&v["a"]), Some(2002));
+        assert_eq!(year_of(&v["b"]), Some(1995));
+        assert_eq!(year_in("1995 crime drama film by Michael Mann"), Some(1995));
     }
 
     #[test]
