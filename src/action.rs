@@ -94,6 +94,7 @@ actions! {
     PrevItem => "Playback", "Previous episode / item", false;
     Replay => "Playback", "Replay from the start", false;
     FrameStep => "Playback", "Next frame (pauses)", true;
+    DownloadSubs => "Subtitles", "Download subtitles…", false;
     FrameBackStep => "Playback", "Previous frame (pauses)", true;
     CycleRepeat => "Playback", "Repeat: off / this / all", false;
     Episodes => "Playback", "Episodes and queue", false;

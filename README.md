@@ -121,6 +121,11 @@ The clock is 12-hour by default; switch to 24-hour in Settings → General.
 - **Playlists** are `.m3u8` files: P (right-stick click) adds a video, a show or a playlist.
 - **Grid view** (V, or left-stick click) for Movies, TV shows, My media, Recently added,
   Continue watching, Recent and playlists.
+- **Download subtitles** on demand: hold the Subs button and pick “+ Download subtitles…”
+  (also in Tracks → Subs, D, or the palette). Results come from OpenSubtitles.com, exact
+  matches for your file first; the one you pick is added and selected, and comes back every
+  time you play that video. Needs a free key: `opensubtitles_api_key = "…"`; languages:
+  `sub_languages = "en,es"`.
 - Settings → Library → **Clear watch history** forgets positions and watched marks.
 
 ## Command line

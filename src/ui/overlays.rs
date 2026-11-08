@@ -408,6 +408,7 @@ impl App {
                 for t in s.tracks_of(TrackKind::Sub) {
                     v.push(TrackRow::Select(TrackKind::Sub, Some(t.id), t.label(), t.meta(), t.selected));
                 }
+                v.push(TrackRow::Select(TrackKind::Sub, Some(super::subs_ui::DOWNLOAD_ID), "+ Download subtitles…".into(), "OpenSubtitles".into(), false));
                 v.push(TrackRow::Header("Adjust".into()));
                 v.push(TrackRow::Step(Adj::SubDelay, "Delay".into(), format!("{:+.2} s", s.sub_delay)));
                 v.push(TrackRow::Step(Adj::SubSize, "Size".into(), format!("{:.0}%", s.sub_scale * 100.0)));
@@ -467,6 +468,7 @@ impl App {
                         self.play_queue_at(i);
                     }
                 }
+                Some(TrackRow::Select(_, Some(super::subs_ui::DOWNLOAD_ID), ..)) if a == Action::Accept => self.open_sub_download(),
                 Some(TrackRow::Select(kind, id, ..)) if a == Action::Accept => {
                     if let Some(p) = &self.player {
                         p.select_track(kind, id);

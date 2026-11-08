@@ -12,6 +12,7 @@ mod mpv_render;
 mod meta;
 mod player;
 mod scrape;
+mod subs;
 mod playlist;
 mod system;
 mod theme;

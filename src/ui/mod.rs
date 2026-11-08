@@ -9,6 +9,7 @@ mod player_view;
 mod library_ui;
 mod playlists;
 mod settings;
+mod subs_ui;
 
 use crate::action::{Action, Context};
 use crate::config::{Config, History, HistoryEntry};
@@ -43,6 +44,8 @@ pub enum Overlay {
     FixMatch,
     /// "Movies or TV Shows?" when adding a library folder.
     LibraryKind,
+    /// OpenSubtitles results for the playing video.
+    SubDownload,
 }
 
 /// Fix Match panel state.
@@ -231,6 +234,8 @@ pub struct App {
     /// Folder waiting for "Movies or TV Shows?" when adding a library.
     pub(crate) lib_pending: Option<PathBuf>,
     pub(crate) lib_focus: usize,
+    /// Subtitle download panel state.
+    pub(crate) sub_dl: Option<subs_ui::SubDl>,
     last_scrape_write: Instant,
     /// Poster textures, most recently used last (a handful at most).
     posters: Vec<(PathBuf, egui::TextureHandle)>,
@@ -353,6 +358,7 @@ impl App {
             fix: None,
             lib_pending: None,
             lib_focus: 0,
+            sub_dl: None,
             last_scrape_write: Instant::now(),
             posters: vec![],
             meta_cache: MetaCache::load(),
@@ -862,6 +868,8 @@ impl App {
                         f.focus = if f.results.is_empty() { 0 } else { 1 };
                     }
                 }
+                crate::scrape::Done::SubResults { video, result } => self.on_sub_results(video, result),
+                crate::scrape::Done::SubSaved { video, result } => self.on_sub_saved(video, result),
                 crate::scrape::Done::Image { src, path } => {
                     if let Some(p) = path {
                         self.posters.retain(|(pp, _)| *pp != p);
@@ -1245,6 +1253,12 @@ impl App {
     fn on_player_event(&mut self, ev: PlayerEvent) {
         match ev {
             PlayerEvent::FileLoaded => {
+                // Subtitles downloaded earlier for this video come back automatically.
+                if let (Some(p), Some(path)) = (self.player.as_ref(), self.playing_path.as_ref()) {
+                    for s in crate::subs::cached(path) {
+                        p.add_sub(&s, false);
+                    }
+                }
                 if let (Some(p), Some(path)) = (self.player.as_ref(), self.playing_path.clone()) {
                     let d = p.s.duration;
                     if d > 0.0 {
@@ -1634,6 +1648,7 @@ impl App {
         if let Some(p) = &self.player {
             v.extend(p.s.tracks_of(TrackKind::Sub).map(|t| (Some(t.id), t.label(), t.meta())));
         }
+        v.push((Some(subs_ui::DOWNLOAD_ID), "+ Download subtitles…".into(), "OpenSubtitles".into()));
         v
     }
 
@@ -1651,6 +1666,9 @@ impl App {
 
     fn sub_hold_select(&mut self, idx: usize) {
         let opts = self.sub_options();
+        if opts.get(idx).is_some_and(|o| o.0 == Some(subs_ui::DOWNLOAD_ID)) {
+            return self.open_sub_download();
+        }
         if let (Some((id, label, _)), Some(p)) = (opts.get(idx), &self.player) {
             p.select_track(TrackKind::Sub, *id);
             self.toast(format!("Subtitles: {label}"));
@@ -1709,6 +1727,7 @@ impl App {
             Overlay::AddToPlaylist => return self.add_playlist_action(a),
             Overlay::FixMatch => return self.fix_action(a),
             Overlay::LibraryKind => return self.lib_kind_action(a),
+            Overlay::SubDownload => return self.sub_dl_action(a),
             Overlay::None => {}
         }
 
@@ -1843,6 +1862,7 @@ impl App {
             }
             Replay => return self.replay(),
             FixMatch => return self.open_fix_match(),
+            DownloadSubs => return self.open_sub_download(),
             CycleRepeat => {
                 self.set_repeat(self.cfg.repeat.next());
                 return;
@@ -2250,6 +2270,7 @@ impl eframe::App for App {
             Overlay::AddToPlaylist => clicked.extend(self.draw_add_playlist(ui, rect)),
             Overlay::FixMatch => clicked.extend(self.draw_fix(ui, rect)),
             Overlay::LibraryKind => clicked.extend(self.draw_lib_kind(ui, rect)),
+            Overlay::SubDownload => clicked.extend(self.draw_sub_dl(ui, rect)),
         }
         self.osk_sync();
         if let Some(o) = self.osk {

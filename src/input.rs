@@ -492,6 +492,7 @@ impl Bindings {
             (Player, s(K::Period), A::NextItem),
             (Player, s(K::Comma), A::PrevItem),
             (Player, k(K::E), A::Episodes),
+            (Player, k(K::D), A::DownloadSubs),
             (Player, k(K::R), A::CycleRepeat),
             (Player, k(K::Backspace), A::Stop),
         ];

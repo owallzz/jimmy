@@ -385,6 +385,14 @@ impl Player {
         self.select_track(kind, next);
     }
 
+    /// Load an external subtitle file into the current video (and switch to it if `select`).
+    pub fn add_sub(&self, path: &Path, select: bool) {
+        self.cmd("sub-add", &[&path.to_string_lossy(), if select { "select" } else { "auto" }]);
+        if select {
+            self.set("sub-visibility", "yes");
+        }
+    }
+
     /// One frame forward / back (mpv pauses on the new frame).
     pub fn frame_step(&self, forward: bool) {
         self.cmd(if forward { "frame-step" } else { "frame-back-step" }, &[]);

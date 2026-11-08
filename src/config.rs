@@ -103,6 +103,10 @@ pub struct Config {
     pub online_metadata: bool,
     /// TMDB API key (v3 key or v4 read token) for movie metadata. Optional.
     pub tmdb_api_key: String,
+    /// OpenSubtitles.com API key, for downloading subtitles on demand. Optional.
+    pub opensubtitles_api_key: String,
+    /// Subtitle languages to download, comma-separated codes ("en", "en,es").
+    pub sub_languages: String,
     /// Extra raw mpv options, applied last.
     pub mpv_options: HashMap<String, String>,
 }
@@ -203,6 +207,8 @@ impl Default for Config {
             grid_view: false,
             online_metadata: true,
             tmdb_api_key: String::new(),
+            opensubtitles_api_key: String::new(),
+            sub_languages: "en".into(),
             mpv_options: HashMap::new(),
         }
     }

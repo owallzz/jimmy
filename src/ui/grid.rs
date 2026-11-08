@@ -126,12 +126,8 @@ impl App {
                         clip.image(tex.id(), poster_r, uv, egui::Color32::WHITE);
                     }
                     None => {
-                        // Placeholder: the title on a plain card.
+                        // No art: a plain tile (the caption below names it).
                         clip.rect_filled(poster_r, 0.0, pal.panel);
-                        let icon = if item.show.is_some() { "▥" } else { "▣" };
-                        text(&clip, pos2(poster_r.center().x, poster_r.top() + poster_r.height() * 0.3), Align2::CENTER_CENTER, icon, 28.0, pal.faint);
-                        let name = self.grid_caption(&item).0;
-                        text_wrap(&clip, pos2(poster_r.left() + 12.0, poster_r.center().y), poster_r.width() - 24.0, &name, 14.0, pal.dim, 4);
                     }
                 }
 

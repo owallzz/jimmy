@@ -95,12 +95,18 @@ pub enum Job {
     Search { show: bool, query: String, year: Option<u32> },
     /// Fix Match: use this TMDB result.
     Apply { req: MatchReq, tmdb: u64 },
+    /// Subtitles: search OpenSubtitles for a video.
+    SubSearch { query: crate::subs::Query, key: String },
+    /// Subtitles: download one result.
+    SubDownload { video: PathBuf, found: crate::subs::Found, key: String },
 }
 
 pub enum Done {
     Matched { key: String, tmdb: Option<u64>, info: Info, manual: bool },
     Results { query: String, list: Vec<Candidate>, error: Option<String> },
     Image { src: String, path: Option<PathBuf> },
+    SubResults { video: PathBuf, result: Result<Vec<crate::subs::Found>, String> },
+    SubSaved { video: PathBuf, result: Result<PathBuf, String> },
 }
 
 #[derive(Clone, Debug)]
@@ -148,6 +154,11 @@ impl Scraper {
                             let online = if req.show { tmdb_tv(tmdb, s.tmdb_key.trim()) } else { tmdb_movie(tmdb, s.tmdb_key.trim()) };
                             let info = online.map(|o| merge(local.clone(), o)).unwrap_or(local);
                             Done::Matched { key: req.key, tmdb: Some(tmdb), info: stamp(info), manual: true }
+                        }
+                        Job::SubSearch { query, key } => Done::SubResults { video: query.path.clone(), result: crate::subs::search(&query, &key) },
+                        Job::SubDownload { video, found, key } => {
+                            let result = crate::subs::download(&video, &found, &key);
+                            Done::SubSaved { video, result }
                         }
                     };
                     if tx.send(done).is_err() {
