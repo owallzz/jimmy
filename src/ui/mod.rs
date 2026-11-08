@@ -815,13 +815,9 @@ impl App {
             Mute => return self.toggle_mute(),
             BrightnessUp => return self.change_brightness(0.05),
             BrightnessDown => return self.change_brightness(-0.05),
-            Tracks => {
+            Tracks | Menu => {
                 self.overlay = Overlay::Tracks;
-                self.tracks_focus = 0;
-                return;
-            }
-            Menu => {
-                self.overlay = Overlay::Tracks;
+                self.tracks_focus = self.tracks_selected_index();
                 return;
             }
             RescueMode => {

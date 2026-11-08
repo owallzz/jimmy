@@ -5,7 +5,7 @@ use super::{App, Screen};
 use crate::action::{Action, Context};
 use crate::player::TrackKind;
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 impl App {
     pub(super) fn draw_player(&mut self, ui: &mut egui::Ui, rect: Rect) -> Vec<Action> {
@@ -193,12 +193,10 @@ impl App {
             out.extend(self.hints(ui, pos2(hx, iy), Context::Player, list, 11.0, 14.0, white(0.4), white(0.1)));
         }
 
-        if s.paused || self.screen != Screen::Player {
-            return out;
+        // Keep the clock and progress ticking while the controls are up.
+        if self.screen == Screen::Player {
+            ui.ctx().request_repaint_after(Duration::from_millis(if s.paused { 1000 } else { 250 }));
         }
-        // Keep the clock/progress ticking while visible even if the video is paused.
-        ui.ctx().request_repaint_after(Duration::from_millis(250));
-        let _ = Instant::now();
         out
     }
 }

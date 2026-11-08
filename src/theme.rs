@@ -27,6 +27,7 @@ pub struct Palette {
     pub tint: Color32,
 }
 
+#[cfg(test)]
 pub struct Theme {
     pub id: &'static str,
     pub name: &'static str,
@@ -87,6 +88,7 @@ fn build(c: [u32; 10]) -> Palette {
     }
 }
 
+#[cfg(test)]
 pub fn all() -> Vec<Theme> {
     RAW.iter()
         .map(|(id, name, c)| Theme { id, name, palette: build(*c) })

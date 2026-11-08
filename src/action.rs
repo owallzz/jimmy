@@ -15,8 +15,6 @@ pub enum Context {
 }
 
 impl Context {
-    pub const ALL: [Context; 4] = [Context::Global, Context::Browser, Context::Player, Context::List];
-
     pub fn label(self) -> &'static str {
         match self {
             Context::Global => "global",

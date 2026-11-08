@@ -380,6 +380,13 @@ impl App {
         v
     }
 
+    /// Focus index of the currently selected track on the current tab.
+    pub(crate) fn tracks_selected_index(&self) -> usize {
+        let rows = self.track_rows();
+        let sel = Self::track_selectable(&rows);
+        sel.iter().position(|&i| matches!(rows[i], TrackRow::Select(.., true))).unwrap_or(0)
+    }
+
     fn track_selectable(rows: &[TrackRow]) -> Vec<usize> {
         rows.iter().enumerate().filter(|(_, r)| matches!(r, TrackRow::Select(..) | TrackRow::Step(..))).map(|(i, _)| i).collect()
     }
@@ -393,7 +400,7 @@ impl App {
             Action::Down => self.tracks_focus = (self.tracks_focus + 1).min(sel.len().saturating_sub(1)),
             Action::NextTab | Action::PrevTab => {
                 self.tracks_tab = if a == Action::NextTab { (self.tracks_tab + 1) % 3 } else { (self.tracks_tab + 2) % 3 };
-                self.tracks_focus = 0;
+                self.tracks_focus = self.tracks_selected_index();
             }
             Action::Back | Action::Tracks | Action::Menu => self.overlay = Overlay::None,
             Action::Accept | Action::Left | Action::Right => match focused {

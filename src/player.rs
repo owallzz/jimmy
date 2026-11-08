@@ -49,7 +49,12 @@ pub struct Track {
 impl Track {
     pub fn label(&self) -> String {
         let lang = self.lang.as_deref().map(language_name);
-        match (lang, self.title.as_deref()) {
+        // mpv titles external subtitle tracks with their file name; that's noise here.
+        let title = self.title.as_deref().filter(|t| {
+            let lower = t.to_ascii_lowercase();
+            !crate::library::SUB_EXTS.iter().any(|e| lower.ends_with(&format!(".{e}")))
+        });
+        match (lang, title) {
             (Some(l), Some(t)) if !t.eq_ignore_ascii_case(&l) => format!("{l} · {t}"),
             (Some(l), _) => l,
             (None, Some(t)) => t.to_string(),
@@ -297,10 +302,6 @@ impl Player {
         Ok(())
     }
 
-    pub fn has_renderer(&self) -> bool {
-        self.renderer.lock().map(|r| r.is_some()).unwrap_or(false)
-    }
-
     /// Must be called with the GL context current (eframe's `on_exit`).
     pub fn shutdown(&mut self) {
         self.cmd("stop", &[]);
@@ -331,10 +332,6 @@ impl Player {
 
     pub fn toggle_pause(&self) {
         self.cmd("cycle", &["pause"]);
-    }
-
-    pub fn set_pause(&self, paused: bool) {
-        self.set("pause", if paused { "yes" } else { "no" });
     }
 
     pub fn seek_relative(&self, secs: f64) {
@@ -392,10 +389,6 @@ impl Player {
             None => Some(ids[0]),
         };
         self.select_track(kind, next);
-    }
-
-    pub fn add_sub_file(&self, path: &Path) {
-        self.cmd("sub-add", &[&path.to_string_lossy(), "select"]);
     }
 
     pub fn set_rescue(&self, on: bool) {
@@ -508,6 +501,7 @@ impl Player {
 }
 
 #[derive(Clone, Copy)]
+#[allow(dead_code)] // constructed on Linux only
 pub enum DisplayHandle {
     Wayland(*const c_void),
     X11(*const c_void),

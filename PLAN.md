@@ -2,7 +2,8 @@
 
 ## Decisions (locked)
 - **Name:** `jimmy` (always lowercase).
-- **UI:** egui via `egui_glow` on winit + glutin (OpenGL 3.3).
+- **UI:** egui via eframe's glow (OpenGL) backend; screens are painted directly for exact flat layouts.
+- **Default theme:** Everforest; all 20 mockup color schemes ship in the app (Settings → Appearance, Ctrl+T).
 - **Desktop:** Fedora Workstation → GNOME on Wayland (X11 fallback via winit).
 - **Controllers:** Xbox and PS5 DualSense. Button glyphs switch automatically (A/B/X/Y ↔ ✕/○/□/△).
 - **Brightness:** changes the **system backlight** (same setting as GNOME's brightness slider).
@@ -81,9 +82,9 @@ Key ideas:
 | Config | `serde` + `toml` |
 | Fuzzy search (palette, browser filter) | `nucleo-matcher` |
 | Paths | `directories` |
-| System backlight | `zbus` → GNOME settings daemon (falls back to systemd-logind `SetBrightness`) |
-| System volume | `libpulse-binding` (talks to PipeWire through `pipewire-pulse`, which Fedora ships by default) |
-| Keep screen awake | Wayland idle-inhibit protocol / `org.freedesktop.ScreenSaver.Inhibit` via `zbus` |
+| System backlight | read `/sys/class/backlight`, write via systemd-logind `SetBrightness` (`busctl`), no root needed |
+| System volume | `wpctl` (WirePlumber, always present with PipeWire) run on a worker thread: no extra libraries to link |
+| Keep screen awake | `gnome-session-inhibit` (falls back to `systemd-inhibit`) while playing |
 
 ---
 
