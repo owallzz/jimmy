@@ -5,6 +5,7 @@ mod config;
 mod input;
 mod install;
 mod library;
+mod media;
 mod mem;
 mod mpv_render;
 mod meta;

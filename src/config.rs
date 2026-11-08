@@ -85,8 +85,47 @@ pub struct Config {
     pub readahead_secs: u32,
     /// Memory cap for read-ahead in MiB. High-bitrate files hit this before `readahead_secs`.
     pub readahead_mb: u32,
+    /// Go back to the list when a video ends (off = stay on the last frame).
+    pub exit_on_end: bool,
+    /// Repeat nothing, the current video, or the whole queue (episodes, playlist).
+    pub repeat: Repeat,
+    /// Play the next episode or playlist item when one ends.
+    pub autoplay: bool,
+    /// Seconds the "Up next" card counts down before autoplay (0 = straight away).
+    pub autoplay_countdown: u32,
+    /// Look up posters, titles and descriptions online (TVmaze, and TMDB with a key).
+    pub online_metadata: bool,
+    /// TMDB API key (v3 key or v4 read token) for movie metadata. Optional.
+    pub tmdb_api_key: String,
     /// Extra raw mpv options, applied last.
     pub mpv_options: HashMap<String, String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Repeat {
+    #[default]
+    Off,
+    One,
+    All,
+}
+
+impl Repeat {
+    pub fn label(self) -> &'static str {
+        match self {
+            Repeat::Off => "off",
+            Repeat::One => "this video",
+            Repeat::All => "whole queue",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Repeat::Off => Repeat::One,
+            Repeat::One => Repeat::All,
+            Repeat::All => Repeat::Off,
+        }
+    }
 }
 
 impl Default for Config {
@@ -116,6 +155,12 @@ impl Default for Config {
             sub_background_box: true,
             readahead_secs: 60,
             readahead_mb: 32,
+            exit_on_end: true,
+            repeat: Repeat::Off,
+            autoplay: true,
+            autoplay_countdown: 10,
+            online_metadata: true,
+            tmdb_api_key: String::new(),
             mpv_options: HashMap::new(),
         }
     }
@@ -210,6 +255,12 @@ impl History {
             self.last_dir = Some(dir.to_path_buf());
             self.dirty = true;
         }
+    }
+
+    /// Forget everything played: positions, watched marks, Continue watching and Recent.
+    pub fn clear(&mut self) {
+        self.files.clear();
+        self.dirty = true;
     }
 
     /// Files sorted by most recently played.

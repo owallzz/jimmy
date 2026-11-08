@@ -385,6 +385,18 @@ impl Player {
         self.select_track(kind, next);
     }
 
+    /// Loop the current file forever (mpv `loop-file`).
+    pub fn set_loop_file(&self, on: bool) {
+        self.set("loop-file", if on { "inf" } else { "no" });
+    }
+
+    /// Back to the start and playing (after the end, or any time).
+    pub fn replay(&mut self) {
+        self.s.eof = false;
+        self.cmd("seek", &["0", "absolute"]);
+        self.set("pause", "no");
+    }
+
     pub fn set_rescue(&self, on: bool) {
         self.set("vd-lavc-skiploopfilter", if on { "all" } else { "default" });
         self.set("vd-lavc-fast", if on { "yes" } else { "no" });

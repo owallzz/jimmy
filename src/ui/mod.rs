@@ -145,6 +145,17 @@ pub struct App {
     render_ready: bool,
     last_hist_write: Instant,
     playing_path: Option<PathBuf>,
+    /// What plays next: a show's episodes, a playlist, or just the one file.
+    pub(crate) queue: Vec<PathBuf>,
+    pub(crate) queue_idx: usize,
+    /// Shown in the player ("Breaking Bad", "Road trip"); empty for a lone file.
+    pub(crate) queue_name: String,
+    /// "Up next" countdown: the next item starts at this instant.
+    pub(crate) up_next: Option<Instant>,
+    /// The video ended and the player stayed open (exit-on-end off, or nothing next).
+    pub(crate) at_end: bool,
+    /// Settings → Clear watch history needs a second press.
+    pub(crate) confirm_clear: Option<Instant>,
 
     sys: System,
     meta_cache: MetaCache,
@@ -247,6 +258,12 @@ impl App {
             render_ready: false,
             last_hist_write: Instant::now(),
             playing_path: None,
+            queue: vec![],
+            queue_idx: 0,
+            queue_name: String::new(),
+            up_next: None,
+            at_end: false,
+            confirm_clear: None,
             sys: System::new(ctx.clone()),
             meta_cache: MetaCache::load(),
             prober: Prober::new(ctx.clone()),
@@ -577,7 +594,50 @@ impl App {
 
     // ------------------------------------------------------------ playback
 
+    /// Play one file. If it's part of the current queue, the queue carries on from there.
     pub(crate) fn play(&mut self, path: &Path, from_start: bool) {
+        match self.queue.iter().position(|p| p == path) {
+            Some(i) => self.queue_idx = i,
+            None => {
+                self.queue = vec![path.to_path_buf()];
+                self.queue_idx = 0;
+                self.queue_name.clear();
+            }
+        }
+        self.load(path, from_start);
+    }
+
+    /// Play `list[idx]`, then the rest of `list` (autoplay, next/previous).
+    pub(crate) fn play_queue(&mut self, list: Vec<PathBuf>, idx: usize, name: String, from_start: bool) {
+        let Some(path) = list.get(idx).cloned() else { return };
+        self.queue = list;
+        self.queue_idx = idx;
+        self.queue_name = name;
+        self.load(&path, from_start);
+    }
+
+    pub(crate) fn queue_next(&self) -> Option<usize> {
+        let n = self.queue.len();
+        if self.queue_idx + 1 < n {
+            Some(self.queue_idx + 1)
+        } else if self.cfg.repeat == crate::config::Repeat::All && n > 1 {
+            Some(0)
+        } else {
+            None
+        }
+    }
+
+    /// Jump within the queue (next/previous episode). Saves the current position first.
+    pub(crate) fn play_queue_at(&mut self, idx: usize) {
+        let Some(path) = self.queue.get(idx).cloned() else { return };
+        self.record_position();
+        self.queue_idx = idx;
+        self.load(&path, false);
+    }
+
+    fn load(&mut self, path: &Path, from_start: bool) {
+        self.up_next = None;
+        self.at_end = false;
         let Some(player) = self.player.as_mut() else {
             let msg = self.player_error.clone().unwrap_or_else(|| "playback unavailable".into());
             self.toast(msg);
@@ -589,6 +649,7 @@ impl App {
             .filter(|h| self.cfg.resume && !from_start && h.resumable())
             .map(|h| h.pos);
         player.load(path, start);
+        player.set_loop_file(self.cfg.repeat == crate::config::Repeat::One);
         self.playing_path = Some(path.to_path_buf());
         let e = self.hist.entry(path);
         e.last_played = crate::config::now_unix();
@@ -622,6 +683,8 @@ impl App {
     }
 
     pub(crate) fn stop(&mut self) {
+        self.up_next = None;
+        self.at_end = false;
         self.record_position();
         if let Some(p) = self.player.as_mut() {
             p.stop();
@@ -654,25 +717,65 @@ impl App {
                     return;
                 }
                 if eof {
-                    if let Some(path) = self.playing_path.clone() {
-                        let e = self.hist.entry(&path);
-                        e.watched = true;
-                        e.pos = 0.0;
-                    }
-                    if let Some(p) = self.player.as_mut() {
-                        p.stop();
-                    }
-                    self.want_focus = self.playing_path.take();
-                    self.screen = Screen::Browser;
-                    self.overlay = Overlay::None;
-                                self.hist.save_if_dirty();
-                    self.refresh_hist_in_items();
+                    self.on_end_of_file();
                 } else if let Some(err) = self.player.as_ref().and_then(|p| p.s.error.clone()) {
                     self.toast(err);
                     self.playing_path = None;
                     self.screen = Screen::Browser;
-                            }
+                }
             }
+        }
+    }
+
+    /// The video played to the end: autoplay the next one, or go back, or stay on the last frame.
+    fn on_end_of_file(&mut self) {
+        if self.at_end || self.up_next.is_some() {
+            return;
+        }
+        if let Some(path) = self.playing_path.clone() {
+            let e = self.hist.entry(&path);
+            e.watched = true;
+            e.pos = 0.0;
+            self.hist.save_if_dirty();
+        }
+        if self.cfg.autoplay && self.queue_next().is_some() {
+            self.up_next = Some(Instant::now() + Duration::from_secs(self.cfg.autoplay_countdown as u64));
+            self.show_osd();
+        } else {
+            self.finish_without_next();
+        }
+    }
+
+    /// Nothing (more) to autoplay: leave the player, or stay with Replay / Back on screen.
+    fn finish_without_next(&mut self) {
+        self.up_next = None;
+        if self.cfg.exit_on_end {
+            if let Some(p) = self.player.as_mut() {
+                p.stop();
+            }
+            self.want_focus = self.playing_path.take();
+            self.screen = Screen::Browser;
+            self.overlay = Overlay::None;
+            self.at_end = false;
+            self.refresh_hist_in_items();
+        } else {
+            self.at_end = true;
+            self.show_osd();
+        }
+    }
+
+    /// Runs the "Up next" countdown.
+    fn tick_up_next(&mut self, ctx: &egui::Context) {
+        let Some(at) = self.up_next else { return };
+        let now = Instant::now();
+        if now >= at {
+            if let Some(i) = self.queue_next() {
+                self.play_queue_at(i);
+            } else {
+                self.up_next = None;
+            }
+        } else {
+            ctx.request_repaint_after((at - now).min(Duration::from_millis(250)));
         }
     }
 
@@ -1108,12 +1211,56 @@ impl App {
         if !matches!(a, VolumeUp | VolumeDown | BrightnessUp | BrightnessDown) {
             self.show_osd();
         }
+        // "Up next" card: A plays now, B cancels the countdown.
+        if self.up_next.is_some() {
+            match a {
+                Accept | PlayPause | NextItem => {
+                    if let Some(i) = self.queue_next() {
+                        self.play_queue_at(i);
+                    }
+                    return;
+                }
+                Back => return self.finish_without_next(),
+                _ => {}
+            }
+        }
+        if self.at_end && matches!(a, Accept | PlayPause) {
+            return self.replay();
+        }
         match a {
             // First press shows the controls, second goes back to the browser.
             Back => {
-                if was_visible {
+                if was_visible || self.at_end {
                     self.stop();
                 }
+                return;
+            }
+            NextItem => {
+                match self.queue_next() {
+                    Some(i) => self.play_queue_at(i),
+                    None => self.toast("Nothing after this one"),
+                }
+                return;
+            }
+            PrevItem => {
+                // Like a CD player: restart this one unless we're near its beginning.
+                let pos = self.player.as_ref().map(|p| p.s.time_pos).unwrap_or(0.0);
+                if pos > 10.0 || self.queue_idx == 0 {
+                    self.replay();
+                } else {
+                    self.play_queue_at(self.queue_idx - 1);
+                }
+                return;
+            }
+            Replay => return self.replay(),
+            CycleRepeat => {
+                self.set_repeat(self.cfg.repeat.next());
+                return;
+            }
+            Episodes => {
+                self.overlay = Overlay::Tracks;
+                self.tracks_tab = 0;
+                self.tracks_focus = self.tracks_selected_index();
                 return;
             }
             Stop => return self.stop(),
@@ -1163,7 +1310,36 @@ impl App {
 
     pub(crate) fn osd_visible_now(&self) -> bool {
         let paused = self.player.as_ref().is_some_and(|p| p.s.paused);
-        paused || Instant::now() < self.osd_until || self.overlay != Overlay::None
+        paused || self.at_end || self.up_next.is_some() || Instant::now() < self.osd_until || self.overlay != Overlay::None
+    }
+
+    pub(crate) fn replay(&mut self) {
+        self.at_end = false;
+        self.up_next = None;
+        if let Some(path) = self.playing_path.clone() {
+            self.hist.entry(&path).last_played = crate::config::now_unix();
+        }
+        if let Some(p) = self.player.as_mut() {
+            p.replay();
+        }
+        self.show_osd();
+    }
+
+    pub(crate) fn set_repeat(&mut self, r: crate::config::Repeat) {
+        self.cfg.repeat = r;
+        self.cfg.save();
+        if let Some(p) = &self.player {
+            p.set_loop_file(r == crate::config::Repeat::One);
+        }
+        self.toast(format!("Repeat: {}", r.label()));
+    }
+
+    /// Settings → Library → Clear watch history.
+    pub(crate) fn clear_history(&mut self) {
+        self.hist.clear();
+        self.hist.save_if_dirty();
+        self.refresh_hist_in_items();
+        self.toast("Watch history cleared");
     }
 
     // ------------------------------------------------------------ hints
@@ -1375,6 +1551,7 @@ impl eframe::App for App {
         for ev in events {
             self.on_player_event(ev);
         }
+        self.tick_up_next(&ctx);
         self.sync_system();
 
         self.take_probe_results();

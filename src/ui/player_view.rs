@@ -151,8 +151,11 @@ impl App {
         let rem = format!("−{}", fmt_time((s.duration - s.time_pos).max(0.0)));
         // Play/pause state is just an icon, right before the track.
         let icon = if s.paused { "||" } else { "▶" };
-        let ir = text(&p, pos2(rect.left() + 24.0, sy), Align2::LEFT_CENTER, icon, 13.0, with_alpha(self.pal.accent, 0.8));
-        let l = text(&p, pos2(ir.right() + 12.0, sy), Align2::LEFT_CENTER, &cur, 15.0, white(0.72));
+        // Fixed-width slot (the wider of the two icons) so the track doesn't shift on play/pause.
+        let slot = measure(&p, "||", 13.0).x.max(measure(&p, "▶", 13.0).x);
+        let ix = rect.left() + 24.0;
+        text(&p, pos2(ix + slot / 2.0, sy), Align2::CENTER_CENTER, icon, 13.0, with_alpha(self.pal.accent, 0.8));
+        let l = text(&p, pos2(ix + slot + 12.0, sy), Align2::LEFT_CENTER, &cur, 15.0, white(0.72));
         let r = text(&p, pos2(rect.right() - 24.0, sy), Align2::RIGHT_CENTER, &rem, 15.0, white(0.45));
         let track = Rect::from_min_max(pos2(l.right() + 14.0, sy - 2.0), pos2(r.left() - 14.0, sy + 2.0));
         p.rect_filled(track, 0.0, white(0.2));

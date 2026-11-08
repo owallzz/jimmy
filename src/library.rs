@@ -19,6 +19,10 @@ fn ext_of(p: &Path) -> String {
     p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
 }
 
+pub fn is_audio(p: &Path) -> bool {
+    AUDIO_EXTS.contains(&ext_of(p).as_str())
+}
+
 pub fn is_media(p: &Path) -> bool {
     let e = ext_of(p);
     VIDEO_EXTS.contains(&e.as_str()) || AUDIO_EXTS.contains(&e.as_str())

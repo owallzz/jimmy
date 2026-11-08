@@ -28,6 +28,11 @@ pub(crate) enum Opt {
     SubBox,
     VolumeMax,
     ResetBoost,
+    ExitOnEnd,
+    Repeat,
+    Autoplay,
+    AutoplayCountdown,
+    OnlineMeta,
 }
 
 #[derive(Clone, Debug)]
@@ -38,6 +43,7 @@ pub(crate) enum Row {
     Theme(usize),
     Bind(Context, Action),
     ResetBindings,
+    ClearHistory,
     Info(String, String),
 }
 
@@ -69,6 +75,11 @@ impl App {
             Opt::SubBox => if c.sub_background_box { "box".into() } else { "outline".into() },
             Opt::VolumeMax => format!("{}%", c.volume_max),
             Opt::ResetBoost => onoff(c.reset_boost_on_new_file),
+            Opt::ExitOnEnd => if c.exit_on_end { "go back".into() } else { "stay".into() },
+            Opt::Repeat => c.repeat.label().into(),
+            Opt::Autoplay => onoff(c.autoplay),
+            Opt::AutoplayCountdown => if c.autoplay_countdown == 0 { "none".into() } else { format!("{} s", c.autoplay_countdown) },
+            Opt::OnlineMeta => onoff(c.online_metadata),
         }
     }
 
@@ -100,6 +111,18 @@ impl App {
             Opt::SubBox => c.sub_background_box = !c.sub_background_box,
             Opt::VolumeMax => c.volume_max = step(&[100, 125, 150, 175, 200], c.volume_max, dir),
             Opt::ResetBoost => c.reset_boost_on_new_file = !c.reset_boost_on_new_file,
+            Opt::ExitOnEnd => c.exit_on_end = !c.exit_on_end,
+            Opt::Repeat => {
+                use crate::config::Repeat;
+                c.repeat = step(&[Repeat::Off, Repeat::One, Repeat::All], c.repeat, dir);
+                let r = c.repeat;
+                if let Some(p) = &self.player {
+                    p.set_loop_file(r == Repeat::One);
+                }
+            }
+            Opt::Autoplay => c.autoplay = !c.autoplay,
+            Opt::AutoplayCountdown => c.autoplay_countdown = step(&[0, 5, 10, 15, 30], c.autoplay_countdown, dir),
+            Opt::OnlineMeta => c.online_metadata = !c.online_metadata,
         }
         self.cfg.save();
         if o == Opt::VolumeMax && self.vol > self.cfg.volume_max as f64 {
@@ -124,9 +147,21 @@ impl App {
                 let mut v: Vec<Row> = self.cfg.roots.iter().cloned().map(Row::Root).collect();
                 v.push(Row::AddRoot);
                 v.push(Row::Opt(Opt::Resume, "Resume where I stopped"));
+                v.push(Row::Opt(Opt::OnlineMeta, "Download posters and info"));
+                let tmdb = if self.cfg.tmdb_api_key.trim().is_empty() {
+                    "not set: shows only (TVmaze). Add tmdb_api_key to config.toml for movies".to_string()
+                } else {
+                    "set: movies and shows".to_string()
+                };
+                v.push(Row::Info("TMDB key".into(), tmdb));
+                v.push(Row::ClearHistory);
                 v
             }
             2 => vec![
+                Row::Opt(Opt::ExitOnEnd, "When a video ends"),
+                Row::Opt(Opt::Autoplay, "Autoplay next episode / item"),
+                Row::Opt(Opt::AutoplayCountdown, "Up next countdown"),
+                Row::Opt(Opt::Repeat, "Repeat"),
                 Row::Opt(Opt::Hwdec, "Hardware decoding"),
                 Row::Opt(Opt::Rescue, "Rescue mode (slow CPU)"),
                 Row::Opt(Opt::SeekSmall, "Small seek"),
@@ -222,6 +257,15 @@ impl App {
                         }
                         _ => self.settings_kb = !self.settings_kb,
                     },
+                    Some(Row::ClearHistory) if a == Action::Accept => {
+                        if self.confirm_clear.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(4)) {
+                            self.confirm_clear = None;
+                            self.clear_history();
+                        } else {
+                            self.confirm_clear = Some(std::time::Instant::now());
+                            self.toast("Press again to clear all watch history");
+                        }
+                    }
                     Some(Row::ResetBindings) if a == Action::Accept => {
                         self.binds = Bindings::defaults();
                         let _ = std::fs::remove_file(Bindings::path());
@@ -395,6 +439,16 @@ impl App {
                         } else {
                             text(&p, pos2(sx, cy), Align2::LEFT_CENTER, "—", 13.0, if focused { pal.ink } else { pal.faint });
                         }
+                    }
+                }
+                Row::ClearHistory => {
+                    let armed = self.confirm_clear.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(4));
+                    let label = if armed { "Press again to clear: positions, watched marks, Continue watching" } else { "Clear watch history" };
+                    text(&p, pos2(lx, cy), Align2::LEFT_CENTER, label, 16.0, if focused { pal.ink } else { pal.boost });
+                    let n = self.hist.files.len();
+                    text(&p, pos2(rx, cy), Align2::RIGHT_CENTER, format!("{n} files"), 13.0, dimc);
+                    if armed {
+                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
                     }
                 }
                 Row::ResetBindings => {
