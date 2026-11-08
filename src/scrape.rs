@@ -545,12 +545,13 @@ fn wiki_search(query: &str, year: Option<u32>) -> Option<Vec<Candidate>> {
                     return None;
                 }
                 let qid = p["pageprops"]["wikibase_item"].as_str()?;
-                let title = st(&p["title"]);
-                let title = match title.rfind(" (") {
-                    Some(i) if title.ends_with(')') && title[i..].contains("film") => title[..i].to_string(),
-                    _ => title,
+                let page = st(&p["title"]);
+                // "Scream (1996 film)": the year in the page title beats the description's.
+                let (title, page_year) = match page.rfind(" (") {
+                    Some(i) if page.ends_with(')') && page[i..].contains("film") => (page[..i].to_string(), year_in(&page[i..])),
+                    _ => (page.clone(), None),
                 };
-                Some(Candidate { id: format!("wikidata:{qid}"), title, year: year_in(&desc), overview: desc })
+                Some(Candidate { id: format!("wikidata:{qid}"), title, year: page_year.or_else(|| year_in(&desc)), overview: desc })
             })
             .collect(),
     )
@@ -563,11 +564,21 @@ fn find_movie(req: &MatchReq) -> Option<String> {
         return Some(format!("wikidata:{q}"));
     }
     let list = wiki_search(&req.title, req.year)?;
-    let best = match req.year {
-        Some(y) => list.iter().find(|c| c.year == Some(y)).or_else(|| list.iter().find(|c| c.year.is_some_and(|cy| cy.abs_diff(y) <= 1))),
-        None => list.first(),
+    // Score: same title counts most, then the year; a clearly different year rules a film out
+    // (so "Scream (1996)" can't become "Scream 2", 1997).
+    let want = crate::media::show_key(&req.title);
+    let score = |c: &Candidate| -> i32 {
+        let title = if crate::media::show_key(&c.title) == want { 4 } else { 0 };
+        let year = match (req.year, c.year) {
+            (Some(y), Some(cy)) if cy == y => 3,
+            (Some(y), Some(cy)) if cy.abs_diff(y) == 1 => 1,
+            (Some(_), Some(_)) => -10,
+            _ => 0,
+        };
+        title + year
     };
-    best.map(|c| c.id.clone())
+    let best = list.iter().enumerate().max_by_key(|(i, c)| (score(c), -(*i as i32)))?.1;
+    (score(best) >= 3 || req.year.is_none() && score(best) >= 0).then(|| best.id.clone())
 }
 
 fn wiki_movie(qid: &str) -> Option<Info> {

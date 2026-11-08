@@ -225,16 +225,34 @@ impl App {
     /// should fall through to the list behaviour (left at a row's start goes back).
     pub(crate) fn grid_move(&mut self, a: Action) -> bool {
         let cols = self.grid_cols.max(1);
+        // Any move other than the ones below forgets the goal column.
+        if !matches!(a, Action::Up | Action::Down) {
+            self.grid_goal = None;
+        }
         let n = self.items.len();
         let last = n.saturating_sub(1);
         match a {
-            Action::Up => self.focus = self.focus.saturating_sub(cols),
+            Action::Up => {
+                // Goal column: coming back up from a short last row returns to the column
+                // the move down started in (if nothing else moved the selection since).
+                let col = match self.grid_goal {
+                    Some((at, col)) if at == self.focus => col,
+                    _ => self.focus % cols,
+                };
+                self.grid_goal = None;
+                if self.focus >= cols {
+                    self.focus = (self.focus / cols - 1) * cols + col;
+                }
+                return true;
+            }
             Action::Down => {
                 if self.focus + cols <= last {
                     self.focus += cols;
                 } else if self.focus / cols < last / cols {
-                    // Partial last row: land on its last tile.
+                    // Partial last row: land on its last tile, remembering the column.
+                    self.grid_goal = Some((last, self.focus % cols));
                     self.focus = last;
+                    return true;
                 }
             }
             Action::PageUp => self.focus = self.focus.saturating_sub(cols * 3),

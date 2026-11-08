@@ -58,6 +58,22 @@ const TAGS: &[&str] = &[
     "unrated", "internal", "limited", "multi", "subbed", "dubbed", "nf", "amzn", "dsnp", "hmax", "hulu", "atvp",
 ];
 
+/// Quality words in a file name, for telling copies apart: "1080p · x265 · HDR".
+pub fn quality_tags(name: &str) -> String {
+    let spaced: String = name.chars().map(|c| if c.is_alphanumeric() || c == '-' { c } else { ' ' }).collect();
+    let mut tags: Vec<String> = Vec::new();
+    for w in spaced.split_whitespace() {
+        let l = w.to_ascii_lowercase();
+        if ["mkv", "mp4", "avi", "m4v"].contains(&l.as_str()) {
+            continue;
+        }
+        if is_tag(w) && !tags.iter().any(|t| t.eq_ignore_ascii_case(w)) {
+            tags.push(w.to_string());
+        }
+    }
+    tags.join(" · ")
+}
+
 fn is_tag(w: &str) -> bool {
     let l = w.to_ascii_lowercase();
     TAGS.contains(&l.as_str()) || (l.ends_with("ch") && l[..l.len() - 2].chars().all(|c| c.is_ascii_digit() || c == '.'))

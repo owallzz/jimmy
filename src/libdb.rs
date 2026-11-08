@@ -66,10 +66,35 @@ pub struct FileRec {
     pub ep: Option<Episode>,
     /// Split movies (`cd1`, `- pt2`).
     pub part: Option<u32>,
+    /// A movie's bonus video, from an extras folder ("Featurettes", "Trailers"…).
+    pub extra: Option<String>,
+    /// Another copy of a movie: Plex's "Plex Versions/<name>/" folders give the name.
+    pub version: Option<String>,
+}
+
+/// Plex's extras folders inside a movie folder: their videos belong to the movie.
+const EXTRAS: &[&str] = &[
+    "featurettes", "featurette", "extras", "behind the scenes", "deleted scenes", "interviews", "scenes", "shorts", "trailers",
+    "trailer", "other", "others", "bonus", "bonus features", "specials",
+];
+
+fn is_extras_dir(name: &str) -> bool {
+    EXTRAS.contains(&name.to_ascii_lowercase().as_str())
+}
+
+/// One playable copy of a movie, for the version picker.
+#[derive(Clone, Debug)]
+pub struct Version {
+    /// First part of the copy (the rest play after it).
+    pub path: PathBuf,
+    /// "Original", "Optimized for TV", "1080p 550"…
+    pub label: String,
+    /// All parts' sizes added up.
+    pub size: u64,
 }
 
 /// Bumped when classification changes so old records are worked out again.
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -83,6 +108,9 @@ pub struct Db {
     #[serde(skip)]
     dirty: bool,
 }
+
+/// What a scanned file is: (show/movie key, episode, part, extra label, version name).
+type Classified = (String, Option<Episode>, Option<u32>, Option<String>, Option<String>);
 
 fn mtime(e: &Entry) -> u64 {
     crate::meta::stamp(e.size, e.modified).1
@@ -98,8 +126,10 @@ impl Db {
         if db.version < VERSION {
             // v2: a TV library can be a single show's folder ("Show/Season 1/…"). Re-sort
             // every episode on the next scan (movies and downloaded art are kept).
-            db.files.retain(|_, f| f.ep.is_none());
+            // v3: movie versions (Plex Versions/) and extras folders. Re-sort everything.
+            db.files.clear();
             db.shows.clear();
+            db.movies.clear();
             db.version = VERSION;
             db.dirty = true;
         }
@@ -181,14 +211,14 @@ impl Db {
             let added = self.files.get(&e.path).map(|f| f.added).unwrap_or(if fresh_lib[li] { mt.min(now) } else { now });
             let rec = match lib.kind {
                 LibraryKind::Shows => self.classify_episode(&e.path, &lib.path),
-                LibraryKind::Movies => Some(self.classify_movie(&e.path)),
+                LibraryKind::Movies => Some(self.classify_movie(&e.path, &lib.path)),
             };
-            let Some((item, ep, part)) = rec else {
+            let Some((item, ep, part, extra, version)) = rec else {
                 // Not recognisable as an episode: still playable from My media and folders.
                 self.files.remove(&e.path);
                 continue;
             };
-            self.files.insert(e.path.clone(), FileRec { size, mtime: mt, added, item, ep, part });
+            self.files.insert(e.path.clone(), FileRec { size, mtime: mt, added, item, ep, part, extra, version });
             self.dirty = true;
         }
         // Forget files that are gone, but not when their whole library folder is missing
@@ -223,7 +253,7 @@ impl Db {
     }
 
     /// A file in a TV library: the top-level folder is the show.
-    fn classify_episode(&mut self, path: &Path, root: &Path) -> Option<(String, Option<Episode>, Option<u32>)> {
+    fn classify_episode(&mut self, path: &Path, root: &Path) -> Option<Classified> {
         let rel = path.strip_prefix(root).ok()?;
         let comps: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
         let stem = path.file_stem()?.to_string_lossy().into_owned();
@@ -249,27 +279,51 @@ impl Db {
             ep.show = show.name().to_string();
             resolve(&mut ep, &show.info);
         }
-        Some((key, Some(ep), None))
+        Some((key, Some(ep), None, None, None))
     }
 
     /// A file in a Movies library: one movie per `Title (Year)` folder, else per file
-    /// (split files `cd1`/`cd2` share one).
-    fn classify_movie(&mut self, path: &Path) -> (String, Option<Episode>, Option<u32>) {
+    /// (split files `cd1`/`cd2` share one). Inside a movie folder, `Plex Versions/<name>/` holds
+    /// other copies and extras folders ("Featurettes"…) hold bonus videos.
+    fn classify_movie(&mut self, path: &Path, root: &Path) -> Classified {
         let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let (base, part) = media::split_part(&stem);
-        let parent = path.parent().unwrap_or(Path::new("/"));
-        let pft = media::folder_title(&parent.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
-        // A "Title (Year)" folder (or one with an ID hint) is the movie; otherwise the file is.
-        let folder_is_movie = pft.year.is_some() || pft.tmdb.is_some() || pft.imdb.is_some();
-        let (folder, ft) = if folder_is_movie {
-            (parent.to_path_buf(), pft)
-        } else {
-            let (t, y) = media::movie_title(&format!("{base}.x"));
-            let hinted = media::folder_title(base);
-            (parent.join(base), media::FolderTitle { title: t, year: y, ..hinted })
+        let rel_dirs: Vec<String> = path
+            .parent()
+            .and_then(|p| p.strip_prefix(root).ok())
+            .map(|r| r.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect())
+            .unwrap_or_default();
+        let mut dirs = rel_dirs.clone();
+        let mut extra = None;
+        let mut version = None;
+        if let Some(i) = dirs.iter().position(|d| is_extras_dir(d)) {
+            extra = Some(dirs[i].clone());
+            dirs.truncate(i);
+        }
+        if let Some(i) = dirs.iter().position(|d| d.eq_ignore_ascii_case("Plex Versions")) {
+            version = Some(dirs.get(i + 1).cloned().unwrap_or_else(|| "Plex version".into()));
+            dirs.truncate(i);
+        }
+        // The movie's folder: the innermost remaining folder named like a movie, or the folder
+        // holding the extras / Plex Versions folder.
+        let folder_of = |n: usize| -> PathBuf { dirs[..n].iter().fold(root.to_path_buf(), |p, d| p.join(d)) };
+        let named = (1..=dirs.len()).rev().find(|&n| {
+            let ft = media::folder_title(&dirs[n - 1]);
+            ft.year.is_some() || ft.tmdb.is_some() || ft.imdb.is_some()
+        });
+        let moved = extra.is_some() || version.is_some();
+        let (folder, ft) = match named.or(if moved && !dirs.is_empty() { Some(dirs.len()) } else { None }) {
+            Some(n) => (folder_of(n), media::folder_title(&dirs[n - 1])),
+            None => {
+                let (t, y) = media::movie_title(&format!("{base}.x"));
+                let hinted = media::folder_title(base);
+                (path.parent().unwrap_or(root).join(base), media::FolderTitle { title: t, year: y, ..hinted })
+            }
         };
         let key = self.key_for_folder(false, &folder, || Item { title: ft.title.clone(), year: ft.year, hint_tmdb: ft.tmdb, hint_imdb: ft.imdb.clone(), ..Default::default() });
-        (key, None, part)
+        // Extras are labelled by their cleaned-up file name ("14 Webisodes").
+        let extra_label = extra.map(|_| Some(media::clean(&stem)).filter(|c| !c.is_empty()).unwrap_or_else(|| stem.clone()));
+        (key, None, part, extra_label, version)
     }
 
     /// Stores a match. With an online ID the record moves to `tv:…` / `movie:…` (merging with a
@@ -326,7 +380,7 @@ impl Db {
                     let s = shows.entry(&f.item).or_insert_with(|| media::Show { key: f.item.clone(), name: show.name().to_string(), episodes: vec![] });
                     s.episodes.push((ep.clone(), entry.clone()));
                 }
-                (None, _) if self.movies.contains_key(&f.item) => movies.entry(&f.item).or_default().push((f.part, entry.clone())),
+                (None, _) if f.extra.is_none() && self.movies.contains_key(&f.item) => movies.entry(&f.item).or_default().push((f.part, entry.clone())),
                 _ => {}
             }
         }
@@ -337,30 +391,67 @@ impl Db {
         shows.sort_by_cached_key(|s| crate::library::natural_key(s.name.trim_start_matches("The ")));
         let mut mv: Vec<(String, Entry)> = movies
             .into_iter()
-            .filter_map(|(k, mut parts)| {
-                parts.sort_by_key(|p| p.0);
+            .filter_map(|(k, _)| {
                 let name = self.movies.get(k).map(|m| m.name().to_string()).unwrap_or_default();
-                parts.into_iter().next().map(|(_, e)| (name, e))
+                // The row plays the main version (first in the picker).
+                let main = self.versions(k).into_iter().next()?;
+                entries.get(&main.path).map(|e| (name, e.clone()))
             })
             .collect();
         mv.sort_by_cached_key(|(n, _)| crate::library::natural_key(n.trim_start_matches("The ")));
         media::Catalog { shows, movies: mv.into_iter().map(|(_, e)| e).collect() }
     }
 
-    /// All parts of the movie a file belongs to, in order (just the file if it isn't split).
+    /// All parts of the movie copy a file belongs to, in order (just the file if it isn't
+    /// split). Parts are files of the same movie, in the same folder, with part numbers.
     pub fn movie_parts(&self, path: &Path) -> Vec<PathBuf> {
-        let Some(f) = self.files.get(path).filter(|f| f.ep.is_none()) else { return vec![path.to_path_buf()] };
-        let mut v: Vec<(Option<u32>, PathBuf)> = self.files.iter().filter(|(_, g)| g.item == f.item && g.ep.is_none()).map(|(p, g)| (g.part, p.clone())).collect();
-        if v.len() < 2 || v.iter().any(|(p, _)| p.is_none()) {
-            return vec![path.to_path_buf()];
-        }
+        let Some(f) = self.files.get(path).filter(|f| f.ep.is_none() && f.part.is_some() && f.extra.is_none()) else { return vec![path.to_path_buf()] };
+        let mut v: Vec<(Option<u32>, PathBuf)> = self
+            .files
+            .iter()
+            .filter(|(p, g)| g.item == f.item && g.ep.is_none() && g.extra.is_none() && g.part.is_some() && p.parent() == path.parent())
+            .map(|(p, g)| (g.part, p.clone()))
+            .collect();
         v.sort();
         v.into_iter().map(|(_, p)| p).collect()
     }
 
+    /// The copies of a movie, main one first: the original (not in "Plex Versions"), then the
+    /// biggest. Split copies count once (their first part).
+    pub fn versions(&self, key: &str) -> Vec<Version> {
+        let mut by_copy: HashMap<(Option<String>, PathBuf), Vec<(Option<u32>, &PathBuf, u64)>> = HashMap::new();
+        for (p, f) in self.files.iter().filter(|(_, f)| f.item == key && f.ep.is_none() && f.extra.is_none()) {
+            // Unsplit files are copies on their own; split parts group by folder.
+            let group = if f.part.is_some() { p.parent().unwrap_or(p).to_path_buf() } else { p.clone() };
+            by_copy.entry((f.version.clone(), group)).or_default().push((f.part, p, f.size));
+        }
+        let mut v: Vec<Version> = by_copy
+            .into_iter()
+            .map(|((ver, _), mut parts)| {
+                parts.sort();
+                let path = parts[0].1.clone();
+                let size = parts.iter().map(|p| p.2).sum();
+                let label = ver.unwrap_or_else(|| {
+                    let tags = media::quality_tags(&path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+                    if tags.is_empty() { "Original".into() } else { format!("Original · {tags}") }
+                });
+                Version { path, label, size }
+            })
+            .collect();
+        v.sort_by(|a, b| a.label.starts_with("Original").cmp(&b.label.starts_with("Original")).reverse().then(b.size.cmp(&a.size)));
+        v
+    }
+
+    /// A movie's bonus videos (label, file), in name order.
+    pub fn extras(&self, key: &str) -> Vec<(String, PathBuf)> {
+        let mut v: Vec<(String, PathBuf)> = self.files.iter().filter(|(_, f)| f.item == key && f.extra.is_some()).map(|(p, f)| (f.extra.clone().unwrap_or_default(), p.clone())).collect();
+        v.sort_by_cached_key(|(l, _)| crate::library::natural_key(l));
+        v
+    }
+
     /// Newest files first (for Recently added).
     pub fn recently_added(&self, n: usize) -> Vec<PathBuf> {
-        let mut v: Vec<(&PathBuf, u64)> = self.files.iter().map(|(p, f)| (p, f.added)).collect();
+        let mut v: Vec<(&PathBuf, u64)> = self.files.iter().filter(|(_, f)| f.extra.is_none() && f.version.is_none()).map(|(p, f)| (p, f.added)).collect();
         v.sort_by(|a, b| b.1.cmp(&a.1));
         v.into_iter().take(n).map(|(p, _)| p.clone()).collect()
     }
@@ -440,6 +531,35 @@ mod tests {
         db.merge(&[e("/tv/Firefly (2002) {tmdb-1437}/Season 1/Firefly - S01E03.mkv")], &libs, 2000);
         assert!(db.shows.contains_key("tv:tvmaze-180"));
         assert_eq!(db.files.len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn plex_versions_and_extras() {
+        let root = std::env::temp_dir().join(format!("jimmy-db2-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let libs = vec![Library { path: root.clone(), kind: LibraryKind::Movies }];
+        let e = |p: &str| { let mut x = entry(&root.join(p).to_string_lossy()); x.size = p.len() as u64; x };
+        let mut db = Db::default();
+        db.merge(
+            &[
+                e("Little Miss Sunshine (2006)/Little Miss Sunshine (2006).mkv"),
+                e("Little Miss Sunshine (2006)/Plex Versions/Optimized for TV/Little Miss Sunshine (2006).mp4"),
+                e("Little Miss Sunshine (2006)/Plex Versions/1080p 550/Little Miss Sunshine (2006).mp4"),
+                e("Little Miss Sunshine (2006)/Featurettes/14 Webisodes.mkv"),
+                e("Scream (1996)/Scream (1996).mp4"),
+                e("Scream 2 (1997)/Scream 2 (1997).mp4"),
+            ],
+            &libs,
+            1,
+        );
+        assert_eq!(db.movies.len(), 3);
+        let lms = db.movies.iter().find(|(_, m)| m.title == "Little Miss Sunshine").map(|(k, _)| k.clone()).unwrap();
+        let v = db.versions(&lms);
+        assert_eq!(v.len(), 3);
+        assert_eq!(v[0].label, "Original");
+        assert_eq!(db.extras(&lms).len(), 1);
+        assert_eq!(db.extras(&lms)[0].0, "14 Webisodes");
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -23,6 +23,22 @@ pub(crate) enum Opt {
     SetWatched(bool),
     ToggleLibrary(PathBuf),
     FixMatch,
+    /// A movie with several copies: choose which to play.
+    Versions,
+    /// A movie's bonus videos.
+    Extras,
+}
+
+/// The version / extras picker.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Pick {
+    pub title: String,
+    /// (label, file) per row.
+    pub rows: Vec<(String, PathBuf)>,
+    pub focus: usize,
+    pub from_start: bool,
+    /// Versions (true) or extras.
+    pub versions: bool,
 }
 
 impl App {
@@ -65,6 +81,16 @@ impl App {
             }
             let watched = h.is_some_and(|h| h.watched);
             v.push((if watched { "Mark unwatched" } else { "Mark watched" }.into(), Opt::SetWatched(!watched)));
+            if let Some(key) = self.db.file(&item.entry.path).map(|f| f.item.clone()) {
+                let nv = self.db.versions(&key).len();
+                if nv > 1 {
+                    v.insert(1, (format!("Choose version… ({nv})"), Opt::Versions));
+                }
+                let ne = self.db.extras(&key).len();
+                if ne > 0 {
+                    v.push((format!("Extras… ({ne})"), Opt::Extras));
+                }
+            }
         }
         if in_db {
             v.push(("Fix match…".into(), Opt::FixMatch));
@@ -126,7 +152,140 @@ impl App {
             }
             Opt::ToggleLibrary(p) => self.toggle_library(&p),
             Opt::FixMatch => self.open_fix_match(),
+            Opt::Versions => {
+                if let Some(i) = item {
+                    self.open_versions(&i.entry.path, false);
+                }
+            }
+            Opt::Extras => {
+                let Some(i) = item else { return };
+                let Some(key) = self.db.file(&i.entry.path).map(|f| f.item.clone()) else { return };
+                let rows = self.db.extras(&key);
+                let title = format!("{} · extras", self.title_of(&i.entry.path));
+                self.pick = Some(Pick { title, rows, focus: 0, from_start: false, versions: false });
+                self.overlay = Overlay::Pick;
+            }
         }
+    }
+
+    /// A library movie with more than one copy opens the version picker. Returns false (and
+    /// does nothing) if there's only one.
+    pub(crate) fn open_versions(&mut self, path: &std::path::Path, from_start: bool) -> bool {
+        let Some(key) = self.db.file(path).filter(|f| f.ep.is_none() && f.extra.is_none()).map(|f| f.item.clone()) else { return false };
+        let versions = self.db.versions(&key);
+        if versions.len() < 2 {
+            return false;
+        }
+        // Read each copy's resolution/codec in the background for the picker.
+        for v in &versions {
+            if !self.probe_requested.contains(&v.path) {
+                self.prober.request(&v.path);
+                self.probe_requested.insert(v.path.clone());
+            }
+        }
+        let rows = versions.into_iter().map(|v| (v.label, v.path)).collect();
+        self.pick = Some(Pick { title: self.title_of(path), rows, focus: 0, from_start, versions: true });
+        self.overlay = Overlay::Pick;
+        true
+    }
+
+    pub(super) fn pick_action(&mut self, a: Action) {
+        let Some(pk) = self.pick.clone() else {
+            self.overlay = Overlay::None;
+            return;
+        };
+        let n = pk.rows.len();
+        match a {
+            Action::Up => {
+                if let Some(p) = self.pick.as_mut() {
+                    p.focus = p.focus.saturating_sub(1);
+                }
+            }
+            Action::Down => {
+                if let Some(p) = self.pick.as_mut() {
+                    p.focus = (p.focus + 1).min(n.saturating_sub(1));
+                }
+            }
+            Action::Back | Action::Left => {
+                self.pick = None;
+                self.overlay = Overlay::None;
+            }
+            Action::Accept | Action::Right => {
+                self.overlay = Overlay::None;
+                self.pick = None;
+                if let Some((_, path)) = pk.rows.get(pk.focus) {
+                    if pk.versions {
+                        self.play_with_queue(path, pk.from_start);
+                    } else {
+                        self.play(path, false);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Size, resolution and codec of a copy, once known.
+    fn pick_meta(&self, path: &std::path::Path) -> String {
+        let mut bits = Vec::new();
+        if let Some(e) = self.entry_map.get(path) {
+            if let Some(m) = self.meta_cache_get(e) {
+                if let Some(v) = &m.video {
+                    bits.push(v.clone());
+                }
+                if m.duration > 0.0 {
+                    bits.push(fmt_time(m.duration));
+                }
+            }
+            bits.push(fmt_size(e.size));
+        }
+        bits.join(" · ")
+    }
+
+    pub(super) fn draw_pick(&mut self, ui: &mut egui::Ui, rect: Rect) -> Vec<Action> {
+        let pal = self.pal;
+        let mut out = Vec::new();
+        let Some(pk) = self.pick.clone() else { return out };
+        let p = ui.painter().clone();
+        let dim = ui.interact(rect, ui.scope_id().with("pick-dim"), Sense::CLICK);
+        p.rect_filled(rect, 0.0, black(0.5));
+        let row_h = 50.0;
+        let w = (rect.width() * 0.5).clamp(420.0, 640.0);
+        let shown = pk.rows.len().min(((rect.height() - 160.0) / row_h).floor().max(1.0) as usize);
+        let h = 56.0 + row_h * shown as f32 + 12.0;
+        let r = Rect::from_center_size(rect.center(), vec2(w, h));
+        if dim.clicked() && !r.contains(dim.interact_pointer_pos().unwrap_or_default()) {
+            out.push(Action::Back);
+        }
+        p.rect_filled(r, 0.0, pal.panel);
+        text(&p, pos2(r.left() + 20.0, r.top() + 18.0), Align2::LEFT_CENTER, if pk.versions { "CHOOSE VERSION" } else { "EXTRAS" }, 11.0, pal.faint);
+        text_clip(&p, pos2(r.left() + 20.0, r.top() + 38.0), w - 40.0, &pk.title, 14.0, pal.dim);
+        let first = pk.focus.saturating_sub(shown.saturating_sub(1));
+        for (vi, (i, (label, path))) in pk.rows.iter().enumerate().skip(first).take(shown).enumerate() {
+            let rr = Rect::from_min_size(pos2(r.left(), r.top() + 56.0 + vi as f32 * row_h), vec2(w, row_h));
+            let focused = i == pk.focus;
+            if focused {
+                p.rect_filled(rr, 0.0, pal.accent);
+            }
+            let (fg, dimc) = if focused { (pal.ink, pal.ink) } else { (pal.text, pal.dim) };
+            text_clip(&p, pos2(rr.left() + 20.0, rr.top() + 17.0), w - 40.0, label, 16.0, fg);
+            let meta = self.pick_meta(path);
+            text_clip(&p, pos2(rr.left() + 20.0, rr.top() + 36.0), w - 40.0, &meta, 12.0, dimc);
+            let resp = ui.interact(rr, ui.scope_id().with(("pick", i)), Sense::CLICK);
+            if resp.clicked() {
+                if let Some(pp) = self.pick.as_mut() {
+                    pp.focus = i;
+                }
+                out.push(Action::Accept);
+            }
+        }
+        if self.cfg.show_hints {
+            let list: &[(Action, &str)] = &[(Action::Accept, "Play"), (Action::Back, "Cancel")];
+            out.extend(self.hints(ui, pos2(r.left(), r.bottom() + 22.0), Context::List, list, 12.0, 18.0, pal.dim, pal.raise));
+        }
+        // Resolutions arrive from the background probe.
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
+        out
     }
 
     pub(super) fn options_action(&mut self, a: Action) {

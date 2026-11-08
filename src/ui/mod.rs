@@ -49,6 +49,8 @@ pub enum Overlay {
     SubDownload,
     /// The selected row's Options menu.
     Options,
+    /// Pick a movie version or extra to play.
+    Pick,
 }
 
 /// Fix Match panel state.
@@ -214,11 +216,15 @@ pub struct App {
     /// Options menu entries and selection.
     pub(crate) opt_list: Vec<(String, options::Opt)>,
     pub(crate) opt_focus: usize,
+    /// Version / extras picker.
+    pub(crate) pick: Option<options::Pick>,
     /// Files waiting for the "Add to playlist" picker, and its selection.
     pub(crate) pl_files: Vec<PathBuf>,
     pub(crate) pl_focus: usize,
     /// Columns in the poster grid (last frame), for up/down moves.
     pub(crate) grid_cols: usize,
+    /// Goal column: (selection it was set at, column) after moving down onto a short last row.
+    pub(crate) grid_goal: Option<(usize, usize)>,
     want_focus: Option<PathBuf>,
 
     pub(crate) screen: Screen,
@@ -248,7 +254,7 @@ pub struct App {
     pub(crate) db: crate::libdb::Db,
     scraper: crate::scrape::Scraper,
     /// The last library scan, by path (for building rows from the database).
-    entry_map: std::collections::HashMap<PathBuf, Entry>,
+    pub(crate) entry_map: std::collections::HashMap<PathBuf, Entry>,
     last_scan: Instant,
     /// Fix Match panel state.
     pub(crate) fix: Option<FixMatch>,
@@ -261,7 +267,7 @@ pub struct App {
     /// Poster textures, most recently used last (a handful at most).
     posters: Vec<(PathBuf, egui::TextureHandle)>,
     meta_cache: MetaCache,
-    prober: Prober,
+    pub(crate) prober: Prober,
     /// File waiting out the hover pause before it gets probed.
     probe_wait: Option<(PathBuf, Instant)>,
     pub(crate) probe_requested: HashSet<PathBuf>,
@@ -355,9 +361,11 @@ impl App {
             show_return: None,
             opt_list: vec![],
             opt_focus: 0,
+            pick: None,
             pl_files: vec![],
             pl_focus: 0,
             grid_cols: 1,
+            grid_goal: None,
             want_focus: None,
             screen: Screen::Browser,
             overlay: Overlay::None,
@@ -642,12 +650,14 @@ impl App {
                         rows.push(show_item(show));
                     }
                 }
-                // A split movie (cd1/cd2) is one row: its first part.
-                None => match rec.filter(|f| f.part.is_some()) {
+                // A library movie is one row (its main version), whatever copies, parts and
+                // extras it has; extras never get rows of their own.
+                None => match rec.filter(|f| f.ep.is_none() && self.db.movies.contains_key(&f.item)) {
+                    Some(f) if f.extra.is_some() => {}
                     Some(f) => {
                         if shown.insert(f.item.clone()) {
-                            let first = self.db.movie_parts(&e.path).into_iter().next().unwrap_or(e.path.clone());
-                            let entry = self.entry_map.get(&first).cloned().unwrap_or(e);
+                            let main = self.db.versions(&f.item).into_iter().next().map(|v| v.path).unwrap_or(e.path.clone());
+                            let entry = self.entry_map.get(&main).cloned().unwrap_or(e);
                             rows.push(self.item(entry));
                         }
                     }
@@ -771,6 +781,10 @@ impl App {
         self.all_cache = None;
         self.scanner.request_all(&self.cfg.roots);
         self.loading = true;
+    }
+
+    pub(crate) fn meta_cache_get(&self, e: &Entry) -> Option<&crate::meta::Meta> {
+        self.meta_cache.get(&e.path, e.size, e.modified)
     }
 
     fn item(&self, entry: Entry) -> Item {
@@ -1179,6 +1193,8 @@ impl App {
             self.play_queue(list, idx, crate::playlist::name(&pl), from_start);
         } else if item.entry.is_dir {
             self.open_dir(item.entry.path, None);
+        } else if self.open_versions(&item.entry.path, from_start) {
+            // Several copies of this movie: the picker plays the chosen one.
         } else {
             self.play_with_queue(&item.entry.path, from_start);
         }
@@ -1804,6 +1820,7 @@ impl App {
             Overlay::LibraryKind => return self.lib_kind_action(a),
             Overlay::SubDownload => return self.sub_dl_action(a),
             Overlay::Options => return self.options_action(a),
+            Overlay::Pick => return self.pick_action(a),
             Overlay::None => {}
         }
 
@@ -2354,6 +2371,7 @@ impl eframe::App for App {
             Overlay::LibraryKind => clicked.extend(self.draw_lib_kind(ui, rect)),
             Overlay::SubDownload => clicked.extend(self.draw_sub_dl(ui, rect)),
             Overlay::Options => clicked.extend(self.draw_options(ui, rect)),
+            Overlay::Pick => clicked.extend(self.draw_pick(ui, rect)),
         }
         self.osk_sync();
         if let Some(o) = self.osk {
