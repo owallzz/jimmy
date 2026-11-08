@@ -88,6 +88,8 @@ pub enum Source {
     Playlist(PathBuf),
     /// Newest files in the libraries.
     Added,
+    /// One library folder's media, grouped like My media (the menu's Folders section).
+    Library(PathBuf),
 }
 
 impl Source {
@@ -509,6 +511,17 @@ impl App {
                     self.set_items(vec![]);
                 }
             }
+            Source::Library(_) => {
+                self.remember_focus();
+                self.source = src;
+                self.filter.clear();
+                self.list_error = None;
+                if self.all_cache.is_none() {
+                    self.loading = true;
+                    self.scanner.request_all(&self.cfg.roots);
+                }
+                self.rebuild_library_view();
+            }
             Source::Added => {
                 self.remember_focus();
                 self.source = src;
@@ -631,6 +644,24 @@ impl App {
         if matches!(self.source, Source::Playlists | Source::Playlist(_)) {
             self.rebuild_playlist_view();
         }
+    }
+
+    /// A library folder's media (menu → Folders), grouped like My media.
+    pub(crate) fn rebuild_library_view(&mut self) {
+        let Source::Library(dir) = self.source.clone() else { return };
+        let entries: Vec<Entry> = self.all_cache.iter().flatten().filter(|e| e.path.starts_with(&dir)).cloned().collect();
+        if self.all_cache.is_some() {
+            self.loading = false;
+        }
+        let rows = self.my_media_rows(entries);
+        self.set_items(rows);
+    }
+
+    /// The file explorer at a library folder (Y / the folder button in the menu).
+    pub(crate) fn explore_library(&mut self, dir: PathBuf) {
+        self.overlay = Overlay::None;
+        self.exploring = false;
+        self.open_dir(dir, None);
     }
 
     /// My media: movies and other videos as they are, but each TV show as one row (opening
@@ -2075,7 +2106,7 @@ impl App {
             (Source::Dir(_), _) => item.entry.name.clone(),
             (_, Some(_)) => self.title_of(&item.entry.path),
             // Library movies in flat lists: their (matched) title, "Blade Runner (1982)".
-            (Source::All | Source::Added | Source::Continue | Source::Recent, None) if self.db.file(&item.entry.path).is_some() => self.title_of(&item.entry.path),
+            (Source::All | Source::Library(_) | Source::Added | Source::Continue | Source::Recent, None) if self.db.file(&item.entry.path).is_some() => self.title_of(&item.entry.path),
             (Source::Movies, None) => match crate::media::movie_title(&item.entry.name) {
                 (t, Some(y)) => format!("{t} ({y})"),
                 (t, None) => t,
@@ -2317,6 +2348,9 @@ impl eframe::App for App {
                 } else if self.source == Source::Added {
                     self.list_error = l.error.clone();
                     self.rebuild_added_view();
+                } else if matches!(self.source, Source::Library(_)) {
+                    self.list_error = l.error.clone();
+                    self.rebuild_library_view();
                 }
             }
             if wanted {

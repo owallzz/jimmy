@@ -51,7 +51,7 @@ impl App {
         ];
         for r in &self.cfg.roots {
             let name = r.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| r.display().to_string());
-            v.push(MenuItem::Source(Source::Dir(r.clone()), name, None));
+            v.push(MenuItem::Source(Source::Library(r.clone()), name, None));
         }
         v.push(MenuItem::Browse);
         v.push(MenuItem::Header(""));
@@ -87,6 +87,12 @@ impl App {
             Action::Home => self.menu_focus = 0,
             Action::End => self.menu_focus = sel.len().saturating_sub(1),
             Action::Back | Action::Menu | Action::Left => self.overlay = Overlay::None,
+            // Y on a library folder: the file explorer there instead of its media.
+            Action::Keyboard => {
+                if let Some(MenuItem::Source(Source::Library(dir), ..)) = sel.get(self.menu_focus).map(|&i| items[i].clone()) {
+                    self.explore_library(dir);
+                }
+            }
             Action::Accept | Action::Right => {
                 let Some(&i) = sel.get(self.menu_focus) else { return };
                 self.overlay = Overlay::None;
@@ -135,7 +141,7 @@ impl App {
                     let row = Rect::from_min_size(pos2(r.left(), y), vec2(w, 38.0));
                     let si = sel.iter().position(|&s| s == i).unwrap_or(0);
                     let focused = si == self.menu_focus;
-                    let current = matches!(item, MenuItem::Source(s, ..) if *s == self.source || (*s == Source::Shows && matches!(self.source, Source::Show(_))) || (*s == Source::Playlists && matches!(self.source, Source::Playlist(_))) || matches!((s, &self.source), (Source::Dir(a), Source::Dir(b)) if b.starts_with(a)));
+                    let current = matches!(item, MenuItem::Source(s, ..) if *s == self.source || (*s == Source::Shows && matches!(self.source, Source::Show(_))) || (*s == Source::Playlists && matches!(self.source, Source::Playlist(_))) || matches!((s, &self.source), (Source::Library(a), Source::Dir(b)) if b.starts_with(a)));
                     if focused {
                         p.rect_filled(row, 0.0, pal.accent);
                     }
@@ -148,7 +154,7 @@ impl App {
                         MenuItem::Source(Source::Movies, l, c) => ("▣", l.clone(), *c),
                         MenuItem::Source(Source::Added, l, c) => ("+", l.clone(), *c),
                         MenuItem::Source(Source::Playlists | Source::Playlist(_), l, c) => ("≣", l.clone(), *c),
-                        MenuItem::Source(Source::Dir(_), l, c) => ("▤", l.clone(), *c),
+                        MenuItem::Source(Source::Dir(_) | Source::Library(_), l, c) => ("▤", l.clone(), *c),
                         MenuItem::Browse => ("+", "Browse computer…".into(), None),
                         MenuItem::Settings => ("≡", "Settings".into(), None),
                         MenuItem::Quit => ("×", "Quit jimmy".into(), None),
@@ -160,11 +166,38 @@ impl App {
                     if let Some(c) = count.filter(|c| *c > 0) {
                         text(&p, pos2(row.right() - 20.0, row.center().y), Align2::RIGHT_CENTER, c.to_string(), 12.0, ic);
                     }
+                    // Library folders: a folder button on the right opens the file explorer.
+                    let mut folder_btn = None;
+                    if let MenuItem::Source(Source::Library(dir), ..) = item {
+                        let br = Rect::from_center_size(pos2(row.right() - 26.0, row.center().y), vec2(32.0, 26.0));
+                        let hovered = ui.rect_contains_pointer(br);
+                        let col = if focused { pal.ink } else if hovered { pal.text } else { pal.faint };
+                        if hovered {
+                            p.rect_filled(br, 0.0, if focused { with_alpha(pal.ink, 0.15) } else { pal.raise });
+                        }
+                        // A small folder: tab plus body.
+                        let body = Rect::from_center_size(br.center() + vec2(0.0, 1.5), vec2(16.0, 11.0));
+                        p.rect_filled(Rect::from_min_size(body.min - vec2(0.0, 3.0), vec2(7.0, 4.0)), 1.0, col);
+                        p.rect_filled(body, 1.0, col);
+                        // Y on a controller does the same.
+                        if focused {
+                            if let Some((cap, _)) = self.glyph(Context::List, Action::Keyboard) {
+                                let cw = measure(&p, &cap, 10.0).x.max(10.0 * 1.7 - 8.0) + 8.0;
+                                chip(&p, pos2(br.left() - 8.0 - cw, row.center().y), &cap, 10.0, pal.ink, with_alpha(pal.ink, 0.15));
+                            }
+                        }
+                        folder_btn = Some((br, dir.clone()));
+                    }
+                    let clicked_btn = folder_btn.as_ref().is_some_and(|(br, _)| ui.interact(*br, ui.scope_id().with(("menu-files", i)), Sense::CLICK).clicked());
                     let resp = ui.interact(row, ui.scope_id().with(("menu", i)), Sense::CLICK);
                     if resp.hovered() && ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO) {
                         self.menu_focus = si;
                     }
-                    if resp.clicked() {
+                    if clicked_btn {
+                        if let Some((_, dir)) = folder_btn {
+                            self.explore_library(dir);
+                        }
+                    } else if resp.clicked() {
                         self.menu_focus = si;
                         out.push(Action::Accept);
                     }

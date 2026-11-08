@@ -27,6 +27,8 @@ pub(crate) enum Opt {
     Versions,
     /// A movie's bonus videos.
     Extras,
+    /// Open the file explorer at the folder holding the selected video.
+    ShowInFiles(PathBuf),
 }
 
 /// The version / extras picker.
@@ -95,6 +97,15 @@ impl App {
         if in_db {
             v.push(("Fix match…".into(), Opt::FixMatch));
         }
+        // The file explorer at the folder this video (or show) lives in.
+        let folder = match &item.show {
+            Some(key) => self.db.item(key).and_then(|i| i.folders.first().cloned()),
+            None if !item.entry.is_dir => item.entry.path.parent().map(|p| p.to_path_buf()),
+            None => None,
+        };
+        if let Some(f) = folder.filter(|f| f.is_dir()) {
+            v.push(("Show in file explorer".into(), Opt::ShowInFiles(f)));
+        }
         v
     }
 
@@ -152,6 +163,11 @@ impl App {
             }
             Opt::ToggleLibrary(p) => self.toggle_library(&p),
             Opt::FixMatch => self.open_fix_match(),
+            Opt::ShowInFiles(dir) => {
+                let focus = item.map(|i| i.entry.path);
+                self.exploring = !self.in_library(&dir);
+                self.open_dir(dir, focus);
+            }
             Opt::Versions => {
                 if let Some(i) = item {
                     self.open_versions(&i.entry.path, false);

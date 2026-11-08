@@ -246,7 +246,7 @@ impl App {
                     }
                     Some(Row::Root(p)) if a == Action::Accept => {
                         self.overlay = Overlay::None;
-                        self.open_dir(p, None);
+                        self.open_source(Source::Library(p));
                     }
                     Some(Row::AddRoot) if a == Action::Accept => {
                         if let Source::Dir(d) = self.source.clone() {

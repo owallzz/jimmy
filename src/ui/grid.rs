@@ -18,7 +18,7 @@ const LOADS_PER_FRAME: usize = 3;
 impl App {
     /// Lists where every row has (or can have) its own poster.
     pub(crate) fn grid_capable(&self) -> bool {
-        matches!(self.source, Source::All | Source::Movies | Source::Shows | Source::Show(_) | Source::Added | Source::Continue | Source::Recent | Source::Playlist(_))
+        matches!(self.source, Source::All | Source::Library(_) | Source::Movies | Source::Shows | Source::Show(_) | Source::Added | Source::Continue | Source::Recent | Source::Playlist(_))
     }
 
     pub(crate) fn grid_active(&self) -> bool {

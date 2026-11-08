@@ -43,6 +43,7 @@ impl App {
             Source::Playlists => (String::new(), "Playlists".into()),
             Source::Playlist(pl) => ("Playlists / ".into(), crate::playlist::name(pl)),
             Source::Added => (String::new(), "Recently added".into()),
+            Source::Library(d) => (String::new(), d.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| d.display().to_string())),
         };
         let max_path = (rect.width() * 0.35).max(120.0);
         if !parent.is_empty() {
@@ -194,7 +195,7 @@ impl App {
                         let ne = s.episodes.len();
                         format!("{ns} season{} · {ne} episode{}", if ns == 1 { "" } else { "s" }, if ne == 1 { "" } else { "s" })
                     })
-                } else if matches!(self.source, Source::All | Source::Continue | Source::Recent) && item.ep.is_none() && self.db.file(&item.entry.path).is_none() {
+                } else if matches!(self.source, Source::All | Source::Library(_) | Source::Continue | Source::Recent) && item.ep.is_none() && self.db.file(&item.entry.path).is_none() {
                     item.entry.path.parent().and_then(|d| d.file_name()).map(|f| f.to_string_lossy().into_owned())
                 } else {
                     None
@@ -275,6 +276,8 @@ impl App {
                     Source::Playlist(_) => "This playlist is empty".into(),
                 Source::Added if self.loading => "Looking through your folders…".into(),
                 Source::Added => "Nothing in your libraries yet. Add folders in Settings → Library.".into(),
+                Source::Library(_) if self.loading => "Looking through this folder…".into(),
+                Source::Library(_) => "No videos in this folder".into(),
                 })
             } else {
                 None
