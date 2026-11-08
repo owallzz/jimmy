@@ -487,7 +487,7 @@ impl Bindings {
         use PadInput as P;
         let pads = vec![
             (Global, P::Select, A::Fullscreen),
-            (Global, P::Guide, A::Menu),
+            (Global, P::Guide, A::Palette),
             (Browser, P::DpadUp, A::Up),
             (Browser, P::DpadDown, A::Down),
             (Browser, P::DpadLeft, A::Left),
@@ -499,7 +499,7 @@ impl Bindings {
             (Browser, P::A, A::Accept),
             (Browser, P::B, A::Back),
             (Browser, P::X, A::Options),
-            (Browser, P::Y, A::Palette),
+            (Browser, P::Y, A::Filter),
             (Browser, P::Start, A::Menu),
             (List, P::DpadUp, A::Up),
             (List, P::DpadDown, A::Down),
@@ -513,6 +513,7 @@ impl Bindings {
             (List, P::B, A::Back),
             (List, P::Start, A::Back),
             (List, P::X, A::Options),
+            (List, P::Y, A::Keyboard),
             (List, P::Lb, A::PrevTab),
             (List, P::Rb, A::NextTab),
             (Player, P::A, A::PlayPause),
@@ -696,6 +697,8 @@ mod tests {
         assert_eq!(b.key_action(Context::Player, KeyChord::new(egui::Key::Space)), Some(Action::PlayPause));
         assert_eq!(b.pad_action(Context::Player, PadInput::DpadUp), Some(Action::VolumeUp));
         assert_eq!(b.pad_action(Context::Browser, PadInput::DpadUp), Some(Action::Up));
+        assert_eq!(b.pad_action(Context::Browser, PadInput::Y), Some(Action::Filter));
+        assert_eq!(b.pad_action(Context::Browser, PadInput::Guide), Some(Action::Palette));
         // vim motions
         assert_eq!(b.key_action(Context::Browser, KeyChord::new(egui::Key::J)), Some(Action::Down));
         assert_eq!(b.key_action(Context::Player, KeyChord::new(egui::Key::L)), Some(Action::SeekForward));

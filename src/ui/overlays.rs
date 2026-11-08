@@ -223,6 +223,7 @@ impl App {
             Action::PageUp => self.palette_focus = self.palette_focus.saturating_sub(8),
             Action::PageDown => self.palette_focus = (self.palette_focus + 8).min(n.saturating_sub(1)),
             Action::Back => self.overlay = Overlay::None,
+            Action::Keyboard => self.open_osk(super::osk::OskTarget::Palette),
             Action::Accept => {
                 let Some(row) = self.palette_matches().into_iter().nth(self.palette_focus) else { return };
                 self.overlay = Overlay::None;
@@ -259,7 +260,9 @@ impl App {
         p.rect_filled(rect, 0.0, black(0.55));
         let w = (rect.width() * 0.6).clamp(420.0, 820.0);
         let row_h = 38.0;
-        let max_rows = 10usize;
+        // Leave room for the on-screen keyboard under the palette when it's open.
+        let osk_h = if self.osk.is_some_and(|o| o.target == super::osk::OskTarget::Palette) { 350.0 } else { 0.0 };
+        let max_rows = if osk_h > 0.0 { (((rect.height() - osk_h - 90.0 - 84.0) / 38.0).floor() as usize).clamp(2, 10) } else { 10 };
         let matches = self.palette_matches();
         let shown = matches.len().min(max_rows);
         let h = 50.0 + row_h * shown.max(1) as f32 + 34.0;
@@ -340,7 +343,7 @@ impl App {
         let fr = Rect::from_min_max(pos2(r.left(), r.bottom() - 34.0), r.right_bottom());
         p.rect_filled(fr, 0.0, pal.bg);
         if self.cfg.show_hints {
-            let list: &[(Action, &str)] = &[(Action::Down, "Move"), (Action::Accept, "Run"), (Action::Back, "Close")];
+            let list: &[(Action, &str)] = &[(Action::Down, "Move"), (Action::Accept, "Run"), (Action::Keyboard, "Type"), (Action::Back, "Close")];
             out.extend(self.hints(ui, pos2(fr.left() + 16.0, fr.center().y), Context::List, list, 12.0, 18.0, pal.dim, pal.raise));
         }
         out

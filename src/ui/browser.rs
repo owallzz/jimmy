@@ -212,7 +212,7 @@ impl App {
                 (Action::Accept, "Play"),
                 (Action::Back, "Back"),
                 (Action::Options, "From start"),
-                (Action::Filter, "Filter"),
+                (Action::Filter, "Search"),
                 (Action::Palette, "Commands"),
                 (Action::Menu, "Menu"),
                 (Action::Fullscreen, "Fullscreen"),

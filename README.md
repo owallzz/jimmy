@@ -64,8 +64,8 @@ System volume works through `osascript`; there is no backlight control on macOS.
 | Move | ↑ ↓ | j k, `5j`, gg / G, Ctrl+D / Ctrl+U | D-pad, left stick |
 | Open / up a folder | Enter, → / Backspace, ← | l / h | A (✕) / B (○) |
 | Play from start | Shift+Enter | o | X (□) |
-| Filter the list | / | / | — |
-| Command palette | Ctrl+P | : | Y (△) in the browser |
+| Search (filter the list) | / | / | Y (△): on-screen keyboard |
+| Command palette | Ctrl+P | : | Guide (Xbox / PS button); Y (△) inside it types |
 | Menu (My media, folders, settings) | Tab | | ≡ |
 | Close a menu | Esc | q | B (○) |
 | Play / pause | Space | | A (✕) |
@@ -77,7 +77,9 @@ System volume works through `osascript`; there is no backlight control on macOS.
 | Stop | Backspace | q | B (○) twice |
 | Fullscreen | F11, F (player) | | View |
 
-In the browser, press `/` to filter: type, Enter keeps the filter, Esc clears it. Settings live in
+In the browser, press `/` to filter: type, Enter keeps the filter, Esc clears it. With a controller,
+Y (△) opens an on-screen keyboard: D-pad/stick moves, A (✕) types, X (□) deletes, Y (△) adds a space,
+B (○) or ≡ finishes. Results filter live while you type. Settings live in
 `~/.config/jimmy/` (`config.toml`, `bindings.toml`), history in `~/.local/share/jimmy/state.toml`.
 The clock is 12-hour by default; switch to 24-hour in Settings → General.
 

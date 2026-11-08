@@ -62,7 +62,8 @@ actions! {
     Accept => "Navigate", "Open / select", false;
     Back => "Navigate", "Back", false;
     Options => "Navigate", "Options (play from start)", false;
-    Filter => "Navigate", "Filter the list", false;
+    Filter => "Navigate", "Search (filter the list)", false;
+    Keyboard => "Navigate", "On-screen keyboard", false;
     PrevTab => "Navigate", "Previous tab", true;
     NextTab => "Navigate", "Next tab", true;
 
@@ -123,6 +124,7 @@ impl Action {
                 | Action::Back
                 | Action::Options
                 | Action::Filter
+                | Action::Keyboard
                 | Action::PrevTab
                 | Action::NextTab
                 | Action::Palette

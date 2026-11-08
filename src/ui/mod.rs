@@ -2,6 +2,7 @@
 
 mod browser;
 pub mod draw;
+mod osk;
 mod overlays;
 mod player_view;
 mod settings;
@@ -59,6 +60,8 @@ enum Hud {
 #[derive(Clone, Debug)]
 pub enum Step {
     Act(Action),
+    /// A gamepad button press, e.g. `pad:a`, `pad:dpad_down`.
+    Pad(PadInput),
     /// A real key press, e.g. `key:j` or `key:Shift+G`.
     Key(KeyChord),
     /// Typed text, e.g. `type:moon`.
@@ -90,6 +93,9 @@ pub struct App {
     pub(crate) filter: String,
     /// Typing goes into the filter (entered with `/`).
     pub(crate) filtering: bool,
+    /// On-screen keyboard for controllers.
+    pub(crate) osk: Option<osk::Osk>,
+    fake_pad: Vec<PadEvent>,
     pending_g: Option<Instant>,
     count: Option<u32>,
     pub(crate) focus: usize,
@@ -181,6 +187,8 @@ impl App {
             list_error: None,
             filter: String::new(),
             filtering: false,
+            osk: None,
+            fake_pad: vec![],
             pending_g: None,
             count: None,
             focus: 0,
@@ -715,7 +723,9 @@ impl App {
             }
         }
 
-        while let Ok(ev) = self.pad_rx.try_recv() {
+        let mut pad_events: Vec<PadEvent> = self.pad_rx.try_iter().collect();
+        pad_events.append(&mut self.fake_pad);
+        for ev in pad_events {
             match ev {
                 PadEvent::Connected { name, kind } => {
                     self.pad_kind = kind;
@@ -743,6 +753,14 @@ impl App {
                         }
                         continue;
                     }
+                    if self.osk.is_some() {
+                        self.osk_pad(p);
+                        if is_direction(p) {
+                            self.repeater.press(p);
+                        }
+                        self.held_pads.push(p);
+                        continue;
+                    }
                     if let Some(a) = self.binds.pad_action(self.context(), p) {
                         actions.push(a);
                         if a.repeats() {
@@ -759,6 +777,14 @@ impl App {
         }
         let (due, next) = self.repeater.due();
         for p in due {
+            if self.osk.is_some() {
+                if is_direction(p) {
+                    self.osk_pad(p);
+                } else {
+                    self.repeater.release(p);
+                }
+                continue;
+            }
             match self.binds.pad_action(self.context(), p) {
                 Some(a) if a.repeats() => actions.push(a),
                 _ => self.repeater.release(p),
@@ -847,7 +873,13 @@ impl App {
                 }
             }
             Back | Left => self.go_up(),
-            Filter => self.filtering = true,
+            Filter => {
+                if self.last_was_pad {
+                    self.open_osk(osk::OskTarget::Filter);
+                } else {
+                    self.filtering = true;
+                }
+            }
             Menu => {
                 self.overlay = Overlay::Menu;
                 self.menu_focus = self.menu_current();
@@ -968,6 +1000,13 @@ impl App {
                     ctx.request_repaint_after(Duration::from_millis(120));
                     break;
                 }
+                Step::Pad(p) => {
+                    self.fake_pad.push(PadEvent::Down(p));
+                    self.fake_pad.push(PadEvent::Up(p));
+                    self.step_at = Instant::now() + Duration::from_millis(120);
+                    ctx.request_repaint();
+                    break;
+                }
                 Step::Key(chord) => {
                     let modifiers = egui::Modifiers { ctrl: chord.ctrl, shift: chord.shift, alt: chord.alt, command: chord.ctrl, ..Default::default() };
                     self.injected.push(egui::Event::Key { key: chord.key, physical_key: None, pressed: true, repeat: false, modifiers });
@@ -1005,6 +1044,11 @@ impl App {
         }
         out
     }
+}
+
+fn is_direction(p: PadInput) -> bool {
+    use PadInput::*;
+    matches!(p, DpadUp | DpadDown | DpadLeft | DpadRight | LstickUp | LstickDown | LstickLeft | LstickRight)
 }
 
 fn digit(k: egui::Key) -> Option<u32> {
@@ -1127,6 +1171,18 @@ impl eframe::App for App {
             Overlay::Palette => clicked.extend(self.draw_palette(ui, rect)),
             Overlay::Tracks => clicked.extend(self.draw_tracks(ui, rect)),
             Overlay::Settings => clicked.extend(self.draw_settings(ui, rect)),
+        }
+        self.osk_sync();
+        if let Some(o) = self.osk {
+            // Over the file list for search (results stay visible), under the palette for commands.
+            let area = match o.target {
+                osk::OskTarget::Filter => {
+                    let detail_w = (rect.width() * 0.3).clamp(300.0, 460.0);
+                    Rect::from_min_max(rect.min, egui::pos2(rect.right() - detail_w, rect.bottom() - 40.0))
+                }
+                osk::OskTarget::Palette => rect,
+            };
+            self.draw_osk(ui, area);
         }
         self.draw_toast(ui, rect);
         for a in clicked {

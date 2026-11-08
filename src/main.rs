@@ -42,6 +42,11 @@ fn parse_steps(list: &str) -> Result<Vec<Step>, String> {
                 ms.parse().map(Step::Wait).map_err(|_| format!("bad wait: {s}"))
             } else if let Some(p) = s.strip_prefix("screenshot:") {
                 Ok(Step::Screenshot(PathBuf::from(p)))
+            } else if let Some(b) = s.strip_prefix("pad:") {
+                toml::Value::String(b.to_string())
+                    .try_into::<input::PadInput>()
+                    .map(Step::Pad)
+                    .map_err(|_| format!("unknown gamepad button: {s}"))
             } else if let Some(k) = s.strip_prefix("key:") {
                 k.parse().map(Step::Key).map_err(|e| format!("{s}: {e}"))
             } else if let Some(t) = s.strip_prefix("type:") {
