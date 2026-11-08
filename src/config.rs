@@ -115,7 +115,7 @@ impl Default for Config {
             sub_scale: 1.0,
             sub_background_box: true,
             readahead_secs: 60,
-            readahead_mb: 48,
+            readahead_mb: 32,
             mpv_options: HashMap::new(),
         }
     }

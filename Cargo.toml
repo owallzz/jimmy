@@ -26,3 +26,6 @@ lto = "thin"
 codegen-units = 4
 panic = "abort"
 strip = true
+
+[dev-dependencies]
+libmpv2-sys = "4"

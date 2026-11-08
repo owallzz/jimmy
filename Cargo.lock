@@ -1173,6 +1173,7 @@ dependencies = [
  "gilrs",
  "libc",
  "libmpv2",
+ "libmpv2-sys",
  "log",
  "nucleo-matcher",
  "png",

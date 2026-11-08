@@ -5,6 +5,7 @@ mod config;
 mod input;
 mod install;
 mod library;
+mod mem;
 mod meta;
 mod player;
 mod system;
@@ -71,6 +72,7 @@ fn parse_steps(list: &str) -> Result<Vec<Step>, String> {
 }
 
 fn main() -> anyhow::Result<()> {
+    mem::init();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
     let mut args = std::env::args().skip(1);

@@ -95,7 +95,7 @@ impl App {
             Opt::SeekSmall => c.seek_small_secs = step(&[3.0, 5.0, 10.0, 15.0, 30.0], c.seek_small_secs, dir),
             Opt::SeekLarge => c.seek_large_secs = step(&[30.0, 60.0, 120.0, 300.0, 600.0], c.seek_large_secs, dir),
             Opt::Readahead => c.readahead_secs = step(&[10, 30, 60, 120, 300], c.readahead_secs, dir),
-            Opt::ReadaheadMem => c.readahead_mb = step(&[16, 32, 48, 64, 128, 256], c.readahead_mb, dir),
+            Opt::ReadaheadMem => c.readahead_mb = step(&[16, 24, 32, 48, 64, 128, 256], c.readahead_mb, dir),
             Opt::SubScale => c.sub_scale = ((c.sub_scale + 0.1 * dir as f64) * 10.0).round().clamp(4.0, 30.0) / 10.0,
             Opt::SubBox => c.sub_background_box = !c.sub_background_box,
             Opt::VolumeMax => c.volume_max = step(&[100, 125, 150, 175, 200], c.volume_max, dir),

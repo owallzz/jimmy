@@ -634,6 +634,7 @@ impl App {
         self.overlay = Overlay::None;
         self.hist.save_if_dirty();
         self.refresh_hist_in_items();
+        crate::mem::trim();
         if let Some(f) = self.want_focus.take() {
             if let Some(i) = self.items.iter().position(|i| i.entry.path == f) {
                 self.focus = i;

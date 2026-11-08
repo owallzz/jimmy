@@ -132,7 +132,18 @@ impl Prober {
             crate::library::lower_io_priority();
             // The hidden mpv is created on first use, so idle jimmy doesn't pay for it.
             let mut mpv: Option<Mpv> = None;
-            while let Ok(mut path) = req_rx.recv() {
+            loop {
+                // Free the hidden mpv after a quiet spell; it's recreated on the next request.
+                let mut path = match req_rx.recv_timeout(Duration::from_secs(15)) {
+                    Ok(p) => p,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if mpv.take().is_some() {
+                            crate::mem::trim();
+                        }
+                        continue;
+                    }
+                    Err(_) => break,
+                };
                 if mpv.is_none() {
                     match probe_mpv() {
                         Ok(m) => mpv = Some(m),
@@ -180,6 +191,14 @@ fn probe_mpv() -> anyhow::Result<Mpv> {
             ("hwdec", "no"),
             ("config", "no"),
             ("load-scripts", "no"),
+            ("load-stats-overlay", "no"),
+            ("load-console", "no"),
+            ("load-osd-console", "no"),
+            ("load-select", "no"),
+            ("load-positioning", "no"),
+            ("load-context-menu", "no"),
+            ("load-commands", "no"),
+            ("load-auto-profiles", "no"),
             ("ytdl", "no"),
             ("terminal", "no"),
             ("idle", "yes"),
