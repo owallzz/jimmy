@@ -451,7 +451,7 @@ impl Bindings {
             (List, c(K::U), A::PageUp),
             (List, k(K::Q), A::Back),
             (List, k(K::X), A::Options),
-            (List, k(K::Y), A::Keyboard),
+            (List, k(K::F), A::Keyboard),
             (Player, k(K::Space), A::PlayPause),
             (Player, k(K::ArrowLeft), A::SeekBack),
             (Player, k(K::ArrowRight), A::SeekForward),
