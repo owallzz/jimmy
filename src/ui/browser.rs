@@ -194,7 +194,7 @@ impl App {
         self.hover_item = hovered;
         let empty_msg = if self.loading && n == 0 {
             Some("Reading folder…".to_string())
-        } else if let Some(e) = &self.list_error {
+        } else if let Some(e) = self.list_error.as_ref().filter(|_| n == 0) {
             Some(format!("Can't open this folder: {e}"))
         } else if n == 0 && !self.filter.is_empty() {
             Some("Nothing matches the filter".into())

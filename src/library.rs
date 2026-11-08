@@ -145,7 +145,9 @@ pub fn list_all(roots: &[PathBuf]) -> Listing {
         }
     }
     files.sort_by_cached_key(|e| natural_key(&e.name));
-    Listing { all: true, dir: PathBuf::new(), entries: files, error: errors.first().cloned() }
+    // A missing library folder (unplugged drive, deleted folder) only matters if nothing was found.
+    let error = if files.is_empty() { errors.first().cloned() } else { None };
+    Listing { all: true, dir: PathBuf::new(), entries: files, error }
 }
 
 /// Case-insensitive sort key where "Episode 2" comes before "Episode 10".
