@@ -83,203 +83,208 @@ impl App {
         text(&p, pos2(rect.right() - PAD, hy), Align2::RIGHT_CENTER, clock_at(now_unix()), 16.0, pal.dim);
 
         // ---- list
-        let w = list_rect.width();
-        let show_prog = w > 640.0;
-        let show_len = w > 480.0;
-        let c_size = list_rect.right() - PAD;
-        let c_len = c_size - 100.0;
-        let c_prog = if show_len { c_len - 100.0 - 150.0 } else { c_size - 100.0 - 150.0 };
-        let name_left = list_rect.left() + PAD + 26.0;
-        let name_right = if show_prog { c_prog - 12.0 } else if show_len { c_len - 100.0 } else { c_size - 100.0 };
-
-        let cy = list_rect.top() + COLS_H / 2.0;
-        let label = |s: &str, pos, align| {
-            text(&p, pos, align, s, 11.0, pal.faint);
-        };
         let seasons = match &self.source {
             Source::Show(key) => self.catalog.show(key).map(|s| s.seasons()).unwrap_or_default(),
             _ => vec![],
         };
-        if seasons.is_empty() {
-            label("NAME", pos2(name_left, cy), Align2::LEFT_CENTER);
+        if self.grid_active() {
+            out.extend(self.draw_grid(ui, list_rect));
         } else {
-            // Season tabs (◀ ▶ / LT RT switch).
-            let mut sx = list_rect.left() + PAD;
-            if seasons.len() > 1 {
-                if let Some((cap, _)) = self.glyph(Context::Browser, Action::PrevTab) {
-                    sx = chip(&p, pos2(sx, cy), &cap, 10.0, pal.dim, pal.raise).right() + 6.0;
-                }
-            }
-            for sn in &seasons {
-                let t = format!("SEASON {sn}");
-                let w = measure(&p, &t, 11.0).x + 18.0;
-                let cell = Rect::from_min_size(pos2(sx, cy - 11.0), vec2(w, 22.0));
-                let on = *sn == self.season;
-                if on {
-                    p.rect_filled(cell, 0.0, pal.raise);
-                    p.rect_filled(Rect::from_min_max(pos2(cell.left(), cell.bottom() - 2.0), cell.right_bottom()), 0.0, pal.accent);
-                }
-                text(&p, cell.center(), Align2::CENTER_CENTER, &t, 11.0, if on { pal.text } else { pal.faint });
-                if ui.interact(cell, ui.scope_id().with(("season", *sn)), Sense::CLICK).clicked() {
-                    self.season = *sn;
-                    self.focus = 0;
-                    self.rebuild_catalog_view();
-                }
-                sx += w + 4.0;
-            }
-            if seasons.len() > 1 {
-                if let Some((cap, _)) = self.glyph(Context::Browser, Action::NextTab) {
-                    chip(&p, pos2(sx + 2.0, cy), &cap, 10.0, pal.dim, pal.raise);
-                }
-            }
-        }
-        if show_prog {
-            label("PROGRESS", pos2(c_prog, cy), Align2::LEFT_CENTER);
-        }
-        if show_len {
-            label("LENGTH", pos2(c_len, cy), Align2::RIGHT_CENTER);
-        }
-        label("SIZE", pos2(c_size, cy), Align2::RIGHT_CENTER);
+            let w = list_rect.width();
+            let show_prog = w > 640.0;
+            let show_len = w > 480.0;
+            let c_size = list_rect.right() - PAD;
+            let c_len = c_size - 100.0;
+            let c_prog = if show_len { c_len - 100.0 - 150.0 } else { c_size - 100.0 - 150.0 };
+            let name_left = list_rect.left() + PAD + 26.0;
+            let name_right = if show_prog { c_prog - 12.0 } else if show_len { c_len - 100.0 } else { c_size - 100.0 };
 
-        let rows_rect = Rect::from_min_max(pos2(list_rect.left(), list_rect.top() + COLS_H), list_rect.right_bottom());
-        let visible = ((rows_rect.height() / ROW_H).floor() as usize).max(1);
-        let n = self.items.len();
+            let cy = list_rect.top() + COLS_H / 2.0;
+            let label = |s: &str, pos, align| {
+                text(&p, pos, align, s, 11.0, pal.faint);
+            };
+            if seasons.is_empty() {
+                label("NAME", pos2(name_left, cy), Align2::LEFT_CENTER);
+            } else {
+                // Season tabs (◀ ▶ / LT RT switch).
+                let mut sx = list_rect.left() + PAD;
+                if seasons.len() > 1 {
+                    if let Some((cap, _)) = self.glyph(Context::Browser, Action::PrevTab) {
+                        sx = chip(&p, pos2(sx, cy), &cap, 10.0, pal.dim, pal.raise).right() + 6.0;
+                    }
+                }
+                for sn in &seasons {
+                    let t = format!("SEASON {sn}");
+                    let w = measure(&p, &t, 11.0).x + 18.0;
+                    let cell = Rect::from_min_size(pos2(sx, cy - 11.0), vec2(w, 22.0));
+                    let on = *sn == self.season;
+                    if on {
+                        p.rect_filled(cell, 0.0, pal.raise);
+                        p.rect_filled(Rect::from_min_max(pos2(cell.left(), cell.bottom() - 2.0), cell.right_bottom()), 0.0, pal.accent);
+                    }
+                    text(&p, cell.center(), Align2::CENTER_CENTER, &t, 11.0, if on { pal.text } else { pal.faint });
+                    if ui.interact(cell, ui.scope_id().with(("season", *sn)), Sense::CLICK).clicked() {
+                        self.season = *sn;
+                        self.focus = 0;
+                        self.rebuild_catalog_view();
+                    }
+                    sx += w + 4.0;
+                }
+                if seasons.len() > 1 {
+                    if let Some((cap, _)) = self.glyph(Context::Browser, Action::NextTab) {
+                        chip(&p, pos2(sx + 2.0, cy), &cap, 10.0, pal.dim, pal.raise);
+                    }
+                }
+            }
+            if show_prog {
+                label("PROGRESS", pos2(c_prog, cy), Align2::LEFT_CENTER);
+            }
+            if show_len {
+                label("LENGTH", pos2(c_len, cy), Align2::RIGHT_CENTER);
+            }
+            label("SIZE", pos2(c_size, cy), Align2::RIGHT_CENTER);
 
-        // Mouse wheel scrolls; keyboard/gamepad focus keeps the selection in view.
-        let resp = ui.interact(rows_rect, ui.scope_id().with("rows"), Sense::hover());
-        if resp.hovered() {
-            let dy = ui.input(|i| i.smooth_scroll_delta.y);
-            if dy != 0.0 {
-                self.scroll = (self.scroll - dy / ROW_H).clamp(0.0, n.saturating_sub(visible) as f32);
-            }
-        }
-        // Only follow the selection when it moved, so wheel scrolling isn't undone.
-        if self.focus != self.scroll_focus {
-            self.scroll_focus = self.focus;
-            let focus = self.focus as f32;
-            if focus < self.scroll {
-                self.scroll = focus;
-            } else if focus >= self.scroll + visible as f32 {
-                self.scroll = focus + 1.0 - visible as f32;
-            }
-        }
-        self.scroll = self.scroll.clamp(0.0, n.saturating_sub(visible) as f32);
-        let first = self.scroll.floor() as usize;
+            let rows_rect = Rect::from_min_max(pos2(list_rect.left(), list_rect.top() + COLS_H), list_rect.right_bottom());
+            let visible = ((rows_rect.height() / ROW_H).floor() as usize).max(1);
+            let n = self.items.len();
 
-        let p_rows = p.with_clip_rect(rows_rect);
-        let mut hovered = None;
-        for (vis_i, idx) in (first..n.min(first + visible + 1)).enumerate() {
-            let item = &self.items[idx].clone();
-            let top = rows_rect.top() + vis_i as f32 * ROW_H;
-            let r = Rect::from_min_size(pos2(rows_rect.left(), top), vec2(rows_rect.width(), ROW_H));
-            let focused = idx == self.focus;
-            let h = item.hist.as_ref();
-            let watched = h.is_some_and(|h| h.watched);
-            if focused {
-                p_rows.rect_filled(r, 0.0, pal.accent);
-            } else if idx % 2 == 1 {
-                p_rows.rect_filled(r, 0.0, pal.alt);
+            // Mouse wheel scrolls; keyboard/gamepad focus keeps the selection in view.
+            let resp = ui.interact(rows_rect, ui.scope_id().with("rows"), Sense::hover());
+            if resp.hovered() {
+                let dy = ui.input(|i| i.smooth_scroll_delta.y);
+                if dy != 0.0 {
+                    self.scroll = (self.scroll - dy / ROW_H).clamp(0.0, n.saturating_sub(visible) as f32);
+                }
             }
-            let fg = if focused { pal.ink } else if watched { pal.dim } else { pal.text };
-            let dimc = if focused { pal.ink } else { pal.dim };
-            let y = r.center().y;
-            let icon = if item.entry.is_dir { "▸" } else { "·" };
-            let icon_c = if focused { pal.ink } else if item.entry.is_dir { pal.accent } else { pal.faint };
-            text(&p_rows, pos2(r.left() + PAD, y), Align2::LEFT_CENTER, icon, 14.0, icon_c);
-            let name = self.row_name(item);
-            let nr = text_clip(&p_rows, pos2(name_left, y), name_right - name_left, &name, 17.0, fg);
-            // Second, quieter text after the name: a show's size, or which folder a file lives in.
-            let note = if let Some(key) = &item.show {
-                self.catalog.show(key).map(|s| {
-                    let ns = s.seasons().len();
-                    let ne = s.episodes.len();
-                    format!("{ns} season{} · {ne} episode{}", if ns == 1 { "" } else { "s" }, if ne == 1 { "" } else { "s" })
+            // Only follow the selection when it moved, so wheel scrolling isn't undone.
+            if self.focus != self.scroll_focus {
+                self.scroll_focus = self.focus;
+                let focus = self.focus as f32;
+                if focus < self.scroll {
+                    self.scroll = focus;
+                } else if focus >= self.scroll + visible as f32 {
+                    self.scroll = focus + 1.0 - visible as f32;
+                }
+            }
+            self.scroll = self.scroll.clamp(0.0, n.saturating_sub(visible) as f32);
+            let first = self.scroll.floor() as usize;
+
+            let p_rows = p.with_clip_rect(rows_rect);
+            let mut hovered = None;
+            for (vis_i, idx) in (first..n.min(first + visible + 1)).enumerate() {
+                let item = &self.items[idx].clone();
+                let top = rows_rect.top() + vis_i as f32 * ROW_H;
+                let r = Rect::from_min_size(pos2(rows_rect.left(), top), vec2(rows_rect.width(), ROW_H));
+                let focused = idx == self.focus;
+                let h = item.hist.as_ref();
+                let watched = h.is_some_and(|h| h.watched);
+                if focused {
+                    p_rows.rect_filled(r, 0.0, pal.accent);
+                } else if idx % 2 == 1 {
+                    p_rows.rect_filled(r, 0.0, pal.alt);
+                }
+                let fg = if focused { pal.ink } else if watched { pal.dim } else { pal.text };
+                let dimc = if focused { pal.ink } else { pal.dim };
+                let y = r.center().y;
+                let icon = if item.entry.is_dir { "▸" } else { "·" };
+                let icon_c = if focused { pal.ink } else if item.entry.is_dir { pal.accent } else { pal.faint };
+                text(&p_rows, pos2(r.left() + PAD, y), Align2::LEFT_CENTER, icon, 14.0, icon_c);
+                let name = self.row_name(item);
+                let nr = text_clip(&p_rows, pos2(name_left, y), name_right - name_left, &name, 17.0, fg);
+                // Second, quieter text after the name: a show's size, or which folder a file lives in.
+                let note = if let Some(key) = &item.show {
+                    self.catalog.show(key).map(|s| {
+                        let ns = s.seasons().len();
+                        let ne = s.episodes.len();
+                        format!("{ns} season{} · {ne} episode{}", if ns == 1 { "" } else { "s" }, if ne == 1 { "" } else { "s" })
+                    })
+                } else if matches!(self.source, Source::All | Source::Continue | Source::Recent) && item.ep.is_none() {
+                    item.entry.path.parent().and_then(|d| d.file_name()).map(|f| f.to_string_lossy().into_owned())
+                } else {
+                    None
+                };
+                if let Some(note) = note {
+                    let fx = nr.right() + 12.0;
+                    if fx + 40.0 < name_right {
+                        text_clip(&p_rows, pos2(fx, y), name_right - fx, &note, 13.0, if focused { pal.ink } else { pal.faint });
+                    }
+                }
+
+                if let Some(key) = &item.show {
+                    if show_prog {
+                        if let Some(show) = self.catalog.show(key) {
+                            let all_watched = show.episodes.iter().all(|(_, f)| self.hist.get(&f.path).is_some_and(|h| h.watched));
+                            let (t, c) = if all_watched {
+                                ("WATCHED".to_string(), pal.ok)
+                            } else {
+                                (format!("NEXT {}", show.episodes[self.next_up(show)].0.code()), pal.accent)
+                            };
+                            text(&p_rows, pos2(c_prog, y), Align2::LEFT_CENTER, t, 11.0, if focused { pal.ink } else { c });
+                        }
+                    }
+                    text(&p_rows, pos2(c_size, y), Align2::RIGHT_CENTER, fmt_size(item.entry.size), 15.0, dimc);
+                } else if item.entry.is_dir {
+                    if show_prog && self.cfg.roots.contains(&item.entry.path) {
+                        text(&p_rows, pos2(c_prog, y), Align2::LEFT_CENTER, "LIBRARY", 11.0, if focused { pal.ink } else { pal.ok });
+                    }
+                } else {
+                    if show_prog {
+                        if watched {
+                            text(&p_rows, pos2(c_prog, y), Align2::LEFT_CENTER, "WATCHED", 11.0, if focused { pal.ink } else { pal.ok });
+                        } else if let Some(h) = h.filter(|h| h.progress() > 0.0) {
+                            let br = Rect::from_min_size(pos2(c_prog, y - 2.0), vec2(110.0, 4.0));
+                            let (track, fill) = if focused { (draw::with_alpha(pal.ink, 0.25), pal.ink) } else { (pal.raise, pal.accent) };
+                            bar(&p_rows, br, h.progress(), track, fill);
+                        }
+                    }
+                    if show_len {
+                        let d = item.duration();
+                        let len = if d > 0.0 { fmt_time(d) } else { "—".into() };
+                        text(&p_rows, pos2(c_len, y), Align2::RIGHT_CENTER, len, 15.0, dimc);
+                    }
+                    text(&p_rows, pos2(c_size, y), Align2::RIGHT_CENTER, fmt_size(item.entry.size), 15.0, dimc);
+                }
+
+                let resp = ui.interact(r.intersect(rows_rect), ui.scope_id().with(("row", idx)), Sense::CLICK);
+                if resp.hovered() {
+                    hovered = Some(idx);
+                }
+                if resp.clicked() {
+                    self.focus = idx;
+                }
+                if resp.double_clicked() {
+                    self.focus = idx;
+                    out.push(Action::Accept);
+                }
+            }
+            self.hover_item = hovered;
+            let empty_msg = if self.loading && n == 0 {
+                Some("Reading folder…".to_string())
+            } else if let Some(e) = self.list_error.as_ref().filter(|_| n == 0) {
+                Some(format!("Can't open this folder: {e}"))
+            } else if n == 0 && !self.filter.is_empty() {
+                Some("Nothing matches the filter".into())
+            } else if n == 0 {
+                Some(match self.source {
+                    Source::Dir(_) => "No videos or folders here".into(),
+                    Source::All if self.loading => "Looking through your folders…".into(),
+                    Source::All => "No media found. Add folders in Settings → Library.".into(),
+                    Source::Continue => "Nothing to continue yet".into(),
+                    Source::Recent => "Nothing played yet".into(),
+                    Source::Movies | Source::Shows | Source::Show(_) if self.loading => "Looking through your folders…".into(),
+                    Source::Movies => "No movies found. Add folders in Settings → Library.".into(),
+                    Source::Shows => "No TV shows found. Episodes need names like Show S01E02 or a Season 1 folder.".into(),
+                    Source::Show(_) => "No episodes".into(),
+                    Source::Playlists => "No playlists yet. Select a video and press Add to playlist.".into(),
+                    Source::Playlist(_) => "This playlist is empty".into(),
                 })
-            } else if matches!(self.source, Source::All | Source::Continue | Source::Recent) && item.ep.is_none() {
-                item.entry.path.parent().and_then(|d| d.file_name()).map(|f| f.to_string_lossy().into_owned())
             } else {
                 None
             };
-            if let Some(note) = note {
-                let fx = nr.right() + 12.0;
-                if fx + 40.0 < name_right {
-                    text_clip(&p_rows, pos2(fx, y), name_right - fx, &note, 13.0, if focused { pal.ink } else { pal.faint });
-                }
+            if let Some(m) = empty_msg {
+                text(&p, pos2(name_left, rows_rect.top() + ROW_H / 2.0), Align2::LEFT_CENTER, m, 15.0, pal.dim);
             }
 
-            if let Some(key) = &item.show {
-                if show_prog {
-                    if let Some(show) = self.catalog.show(key) {
-                        let all_watched = show.episodes.iter().all(|(_, f)| self.hist.get(&f.path).is_some_and(|h| h.watched));
-                        let (t, c) = if all_watched {
-                            ("WATCHED".to_string(), pal.ok)
-                        } else {
-                            (format!("NEXT {}", show.episodes[self.next_up(show)].0.code()), pal.accent)
-                        };
-                        text(&p_rows, pos2(c_prog, y), Align2::LEFT_CENTER, t, 11.0, if focused { pal.ink } else { c });
-                    }
-                }
-                text(&p_rows, pos2(c_size, y), Align2::RIGHT_CENTER, fmt_size(item.entry.size), 15.0, dimc);
-            } else if item.entry.is_dir {
-                if show_prog && self.cfg.roots.contains(&item.entry.path) {
-                    text(&p_rows, pos2(c_prog, y), Align2::LEFT_CENTER, "LIBRARY", 11.0, if focused { pal.ink } else { pal.ok });
-                }
-            } else {
-                if show_prog {
-                    if watched {
-                        text(&p_rows, pos2(c_prog, y), Align2::LEFT_CENTER, "WATCHED", 11.0, if focused { pal.ink } else { pal.ok });
-                    } else if let Some(h) = h.filter(|h| h.progress() > 0.0) {
-                        let br = Rect::from_min_size(pos2(c_prog, y - 2.0), vec2(110.0, 4.0));
-                        let (track, fill) = if focused { (draw::with_alpha(pal.ink, 0.25), pal.ink) } else { (pal.raise, pal.accent) };
-                        bar(&p_rows, br, h.progress(), track, fill);
-                    }
-                }
-                if show_len {
-                    let d = item.duration();
-                    let len = if d > 0.0 { fmt_time(d) } else { "—".into() };
-                    text(&p_rows, pos2(c_len, y), Align2::RIGHT_CENTER, len, 15.0, dimc);
-                }
-                text(&p_rows, pos2(c_size, y), Align2::RIGHT_CENTER, fmt_size(item.entry.size), 15.0, dimc);
-            }
-
-            let resp = ui.interact(r.intersect(rows_rect), ui.scope_id().with(("row", idx)), Sense::CLICK);
-            if resp.hovered() {
-                hovered = Some(idx);
-            }
-            if resp.clicked() {
-                self.focus = idx;
-            }
-            if resp.double_clicked() {
-                self.focus = idx;
-                out.push(Action::Accept);
-            }
-        }
-        self.hover_item = hovered;
-        let empty_msg = if self.loading && n == 0 {
-            Some("Reading folder…".to_string())
-        } else if let Some(e) = self.list_error.as_ref().filter(|_| n == 0) {
-            Some(format!("Can't open this folder: {e}"))
-        } else if n == 0 && !self.filter.is_empty() {
-            Some("Nothing matches the filter".into())
-        } else if n == 0 {
-            Some(match self.source {
-                Source::Dir(_) => "No videos or folders here".into(),
-                Source::All if self.loading => "Looking through your folders…".into(),
-                Source::All => "No media found. Add folders in Settings → Library.".into(),
-                Source::Continue => "Nothing to continue yet".into(),
-                Source::Recent => "Nothing played yet".into(),
-                Source::Movies | Source::Shows | Source::Show(_) if self.loading => "Looking through your folders…".into(),
-                Source::Movies => "No movies found. Add folders in Settings → Library.".into(),
-                Source::Shows => "No TV shows found. Episodes need names like Show S01E02 or a Season 1 folder.".into(),
-                Source::Show(_) => "No episodes".into(),
-                Source::Playlists => "No playlists yet. Select a video and press Add to playlist.".into(),
-                Source::Playlist(_) => "This playlist is empty".into(),
-            })
-        } else {
-            None
-        };
-        if let Some(m) = empty_msg {
-            text(&p, pos2(name_left, rows_rect.top() + ROW_H / 2.0), Align2::LEFT_CENTER, m, 15.0, pal.dim);
         }
 
         // ---- hint bar (under the list only)
@@ -304,6 +309,9 @@ impl App {
             }
             if seasons.len() > 1 {
                 list.push((Action::NextTab, "Season"));
+            }
+            if self.grid_capable() {
+                list.push((Action::ToggleView, if self.cfg.grid_view { "List" } else { "Grid" }));
             }
             list.push((Action::Filter, "Search"));
             if list.len() < 6 {
@@ -338,10 +346,9 @@ impl App {
         } else if let Some(e) = &item.ep {
             let t = self.episode_title(&item.entry.path, e).map(|t| format!(" · {t}")).unwrap_or_default();
             format!("{}{t}", e.code())
-        } else if let Some(i) = info.as_ref().filter(|i| !i.title.is_empty()) {
-            i.title.clone()
         } else {
-            std::path::Path::new(&item.entry.name).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+            // Metadata title, else the cleaned-up file name ("Alien (1979)").
+            self.title_of(&item.entry.path)
         };
 
         // ---- poster beside title / year / rating / genres

@@ -108,6 +108,9 @@ The clock is 12-hour by default; switch to 24-hour in Settings → General.
   shows come from TVmaze (no account needed); movies need a free TMDB key in `config.toml`:
   `tmdb_api_key = "…"`. Only what you look at is looked up, via the system `curl`. Turn it
   off or refresh it in Settings → Library.
+- **Grid view** (V, or left-stick click, in the browser) shows Movies, TV shows, My media,
+  Continue watching, Recent and playlists as a poster grid; it's remembered. Folders and a
+  show's episode page stay as lists.
 - Settings → Library → **Clear watch history** forgets positions and watched marks.
 
 ## Command line

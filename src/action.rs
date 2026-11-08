@@ -96,6 +96,7 @@ actions! {
     CycleRepeat => "Playback", "Repeat: off / this / all", false;
     Episodes => "Playback", "Episodes and queue", false;
     AddToPlaylist => "Library", "Add to playlist", false;
+    ToggleView => "Library", "Grid / list view", false;
 
     VolumeUp => "Audio", "Volume up", true;
     VolumeDown => "Audio", "Volume down", true;

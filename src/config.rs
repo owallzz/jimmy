@@ -93,6 +93,8 @@ pub struct Config {
     pub autoplay: bool,
     /// Seconds the "Up next" card counts down before autoplay (0 = straight away).
     pub autoplay_countdown: u32,
+    /// Movies, TV shows and other flat lists as a poster grid instead of a list.
+    pub grid_view: bool,
     /// Look up posters, titles and descriptions online (TVmaze, and TMDB with a key).
     pub online_metadata: bool,
     /// TMDB API key (v3 key or v4 read token) for movie metadata. Optional.
@@ -159,6 +161,7 @@ impl Default for Config {
             repeat: Repeat::Off,
             autoplay: true,
             autoplay_countdown: 10,
+            grid_view: false,
             online_metadata: true,
             tmdb_api_key: String::new(),
             mpv_options: HashMap::new(),

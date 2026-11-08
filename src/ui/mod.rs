@@ -2,6 +2,7 @@
 
 mod browser;
 pub mod draw;
+mod grid;
 mod osk;
 mod overlays;
 mod player_view;
@@ -177,6 +178,8 @@ pub struct App {
     /// Files waiting for the "Add to playlist" picker, and its selection.
     pub(crate) pl_files: Vec<PathBuf>,
     pub(crate) pl_focus: usize,
+    /// Columns in the poster grid (last frame), for up/down moves.
+    pub(crate) grid_cols: usize,
     want_focus: Option<PathBuf>,
 
     pub(crate) screen: Screen,
@@ -303,6 +306,7 @@ impl App {
             season: 1,
             pl_files: vec![],
             pl_focus: 0,
+            grid_cols: 1,
             want_focus: None,
             screen: Screen::Browser,
             overlay: Overlay::None,
@@ -811,6 +815,15 @@ impl App {
         }
     }
 
+    /// Like `want_scrape`, for tiles scrolling past in the grid.
+    pub(crate) fn want_scrape_quiet(&mut self, q: crate::scrape::Query) {
+        self.want_scrape(q);
+    }
+
+    pub(crate) fn poster_loaded(&self, path: &Path) -> bool {
+        self.posters.iter().any(|(p, _)| p == path)
+    }
+
     /// Poster texture, loaded on first use; keeps the last few around.
     pub(crate) fn poster(&mut self, ctx: &egui::Context, path: &Path) -> Option<egui::TextureHandle> {
         if let Some(i) = self.posters.iter().position(|(p, _)| p == path) {
@@ -822,7 +835,9 @@ impl App {
         let img = crate::scrape::load_thumb(path)?;
         let tex = ctx.load_texture(path.to_string_lossy(), img, egui::TextureOptions::LINEAR);
         self.posters.push((path.to_path_buf(), tex.clone()));
-        if self.posters.len() > 8 {
+        // Enough for a screenful of grid tiles (~0.6 MB each on the GPU); a few in list view.
+        let keep = if self.cfg.grid_view { 48 } else { 8 };
+        while self.posters.len() > keep {
             drop(self.posters.remove(0));
         }
         Some(tex)
@@ -1589,6 +1604,12 @@ impl App {
         use Action::*;
         let n = self.items.len();
         let page = 10;
+        if a == ToggleView {
+            return self.toggle_grid();
+        }
+        if self.grid_active() && matches!(a, Up | Down | PageUp | PageDown | Left | Right) && self.grid_move(a) {
+            return;
+        }
         match a {
             Up => self.focus = self.focus.saturating_sub(1),
             Down => self.focus = (self.focus + 1).min(n.saturating_sub(1)),
