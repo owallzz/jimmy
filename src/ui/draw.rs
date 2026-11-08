@@ -52,6 +52,38 @@ pub fn text_wrap(p: &Painter, pos: Pos2, width: f32, s: &str, size: f32, color: 
     h
 }
 
+/// Wrapped text that may break inside words (for file paths). `pos` is top-left. Returns height.
+pub fn text_wrap_any(p: &Painter, pos: Pos2, width: f32, s: &str, size: f32, color: Color32) -> f32 {
+    // Prefer breaking paths after a `/` (or a space), so folder names stay whole.
+    let tokens: Vec<&str> = s.split_inclusive(['/', ' ']).collect();
+    if tokens.len() > 1 {
+        let mut lines: Vec<String> = vec![String::new()];
+        for t in tokens {
+            let cur = lines.last_mut().unwrap();
+            if !cur.is_empty() && measure(p, &format!("{cur}{t}"), size).x > width {
+                lines.push(t.to_string());
+            } else {
+                cur.push_str(t);
+            }
+        }
+        let mut y = pos.y;
+        for line in lines {
+            y += break_anywhere(p, pos2(pos.x, y), width, line.trim_end(), size, color);
+        }
+        return y - pos.y;
+    }
+    break_anywhere(p, pos, width, s, size, color)
+}
+
+fn break_anywhere(p: &Painter, pos: Pos2, width: f32, s: &str, size: f32, color: Color32) -> f32 {
+    let mut job = LayoutJob::single_section(s.to_owned(), TextFormat::simple(font(size), color));
+    job.wrap = TextWrapping { max_width: width.max(1.0), max_rows: usize::MAX, break_anywhere: true, overflow_character: None };
+    let g = p.layout_job(job);
+    let h = g.size().y;
+    p.galley(pos, g, color);
+    h
+}
+
 pub fn measure(p: &Painter, s: &str, size: f32) -> Vec2 {
     p.layout_no_wrap(s.to_owned(), font(size), Color32::WHITE).size()
 }

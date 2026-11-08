@@ -256,7 +256,15 @@ impl App {
                     vx = left;
                 }
                 let s = if vx == left { s.trim_start() } else { s.as_str() };
-                let rr = text_clip(&p, pos2(vx, y + 9.0), (right - vx).max(10.0), s, 15.0, *c);
+                if vx == left && w > right - left {
+                    // Too long for one line (file names, paths): wrap instead of cutting it off.
+                    let line_h = measure(&p, "X", 15.0).y;
+                    let h = text_wrap_any(&p, pos2(vx, y + 9.0 - line_h / 2.0), right - left, s, 15.0, *c);
+                    y += (h - line_h).max(0.0);
+                    vx = right;
+                    continue;
+                }
+                let rr = text(&p, pos2(vx, y + 9.0), Align2::LEFT_CENTER, s, 15.0, *c);
                 vx = rr.right();
             }
             y += 24.0;
@@ -269,10 +277,7 @@ impl App {
             kv("File", &[(item.entry.name.clone(), pal.dim)]);
             if !matches!(self.source, Source::Dir(_)) {
                 if let Some(parent) = item.entry.path.parent() {
-                    // Keep the meaningful end of the path: …/Shows/Season 1
-                    let parts: Vec<String> = parent.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
-                    let short = if parts.len() > 3 { format!("…/{}", parts[parts.len() - 3..].join("/")) } else { parent.display().to_string() };
-                    kv("Folder", &[(short, pal.dim)]);
+                    kv("Folder", &[(parent.display().to_string(), pal.dim)]);
                 }
             }
             if h.duration > 0.0 {
