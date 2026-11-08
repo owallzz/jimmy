@@ -524,7 +524,7 @@ impl App {
                 self.remember_focus();
                 if let Source::Show(key) = &cat {
                     if let Some(show) = self.catalog.show(key) {
-                        let i = self.next_up(show);
+                        let i = self.last_watched(show);
                         self.season = show.episodes[i].0.season;
                         self.want_focus = Some(show.episodes[i].1.path.clone());
                     }
@@ -662,6 +662,16 @@ impl App {
         rows
     }
 
+    /// Where a show's page opens: the episode played most recently, else the first episode
+    /// (of season 1; Specials only if that's all there is).
+    pub(crate) fn last_watched(&self, show: &crate::media::Show) -> usize {
+        let last = (0..show.episodes.len())
+            .filter_map(|i| self.hist.get(&show.episodes[i].1.path).filter(|h| h.last_played > 0).map(|h| (i, h.last_played)))
+            .max_by_key(|(_, t)| *t)
+            .map(|(i, _)| i);
+        last.or_else(|| (0..show.episodes.len()).find(|&i| show.episodes[i].0.season > 0)).unwrap_or(0)
+    }
+
     /// The episode to offer next: the one in progress, else the first unwatched one after the
     /// last one played, else the first unwatched, else the first.
     pub(crate) fn next_up(&self, show: &crate::media::Show) -> usize {
@@ -714,10 +724,18 @@ impl App {
         if i < 0 || i >= seasons.len() as i32 {
             return false;
         }
-        self.season = seasons[i as usize];
-        self.focus = 0;
+        let season = seasons[i as usize];
+        // Land on the season's most recently watched episode, else its first.
+        let in_season: Vec<&PathBuf> = show.episodes.iter().filter(|(e, _)| e.season == season).map(|(_, f)| &f.path).collect();
+        let target = in_season
+            .iter()
+            .filter_map(|p| self.hist.get(p).filter(|h| h.last_played > 0).map(|h| (*p, h.last_played)))
+            .max_by_key(|(_, t)| *t)
+            .map(|(p, _)| p.clone())
+            .or_else(|| in_season.first().map(|p| (*p).clone()));
+        self.season = season;
+        self.want_focus = target;
         self.rebuild_catalog_view();
-        self.focus = self.first_unwatched();
         true
     }
 
@@ -1801,6 +1819,11 @@ impl App {
         let page = 10;
         if a == ToggleView {
             return self.toggle_grid();
+        }
+        // On a show's page LB / RB (PgUp / PgDn) switch seasons.
+        if matches!(self.source, Source::Show(_)) && matches!(a, PageUp | PageDown) {
+            self.change_season(if a == PageUp { -1 } else { 1 });
+            return;
         }
         if a == FixMatch {
             return self.open_fix_match();

@@ -105,7 +105,14 @@ impl App {
             _ => vec![],
         };
         if self.grid_active() {
-            out.extend(self.draw_grid(ui, list_rect));
+            // A show's page keeps its season tabs above the grid.
+            let grid_rect = if seasons.is_empty() {
+                list_rect
+            } else {
+                self.draw_season_tabs(ui, &p, list_rect.left() + PAD, list_rect.top() + COLS_H / 2.0, &seasons);
+                Rect::from_min_max(pos2(list_rect.left(), list_rect.top() + COLS_H), list_rect.max)
+            };
+            out.extend(self.draw_grid(ui, grid_rect));
         } else {
             let w = list_rect.width();
             let show_prog = w > 640.0;
@@ -123,35 +130,7 @@ impl App {
             if seasons.is_empty() {
                 label("NAME", pos2(name_left, cy), Align2::LEFT_CENTER);
             } else {
-                // Season tabs (◀ ▶ / LT RT switch).
-                let mut sx = list_rect.left() + PAD;
-                if seasons.len() > 1 {
-                    if let Some((cap, _)) = self.glyph(Context::Browser, Action::PrevTab) {
-                        sx = chip(&p, pos2(sx, cy), &cap, 10.0, pal.dim, pal.raise).right() + 6.0;
-                    }
-                }
-                for sn in &seasons {
-                    let t = format!("SEASON {sn}");
-                    let w = measure(&p, &t, 11.0).x + 18.0;
-                    let cell = Rect::from_min_size(pos2(sx, cy - 11.0), vec2(w, 22.0));
-                    let on = *sn == self.season;
-                    if on {
-                        p.rect_filled(cell, 0.0, pal.raise);
-                        p.rect_filled(Rect::from_min_max(pos2(cell.left(), cell.bottom() - 2.0), cell.right_bottom()), 0.0, pal.accent);
-                    }
-                    text(&p, cell.center(), Align2::CENTER_CENTER, &t, 11.0, if on { pal.text } else { pal.faint });
-                    if ui.interact(cell, ui.scope_id().with(("season", *sn)), Sense::CLICK).clicked() {
-                        self.season = *sn;
-                        self.focus = 0;
-                        self.rebuild_catalog_view();
-                    }
-                    sx += w + 4.0;
-                }
-                if seasons.len() > 1 {
-                    if let Some((cap, _)) = self.glyph(Context::Browser, Action::NextTab) {
-                        chip(&p, pos2(sx + 2.0, cy), &cap, 10.0, pal.dim, pal.raise);
-                    }
-                }
+                self.draw_season_tabs(ui, &p, list_rect.left() + PAD, cy, &seasons);
             }
             if show_prog {
                 label("PROGRESS", pos2(c_prog, cy), Align2::LEFT_CENTER);
@@ -317,7 +296,7 @@ impl App {
             // Everything else (from start, playlists, watched, fix match…) is in Options.
             let mut list: Vec<(Action, &str)> = vec![(Action::Accept, open), (Action::Back, "Back"), (Action::Options, "Options")];
             if seasons.len() > 1 {
-                list.push((Action::NextTab, "Season"));
+                list.push((Action::PageDown, "Season"));
             }
             if self.grid_capable() {
                 list.push((Action::ToggleView, if self.cfg.grid_view { "List" } else { "Grid" }));
@@ -333,6 +312,39 @@ impl App {
         // ---- info panel
         out.extend(self.draw_detail(ui, detail_rect));
         out
+    }
+
+    /// "SEASON 1  SEASON 2 …" tabs on a show's page, with the LB / RB (PgUp / PgDn) caps.
+    fn draw_season_tabs(&mut self, ui: &mut egui::Ui, p: &egui::Painter, left: f32, cy: f32, seasons: &[u32]) {
+        let pal = self.pal;
+        let mut sx = left;
+        if seasons.len() > 1 {
+            if let Some((cap, _)) = self.glyph(Context::Browser, Action::PageUp) {
+                sx = chip(p, pos2(sx, cy), &cap, 10.0, pal.dim, pal.raise).right() + 6.0;
+            }
+        }
+        for sn in seasons {
+            let t = if *sn == 0 { "SPECIALS".to_string() } else { format!("SEASON {sn}") };
+            let w = measure(p, &t, 11.0).x + 18.0;
+            let cell = Rect::from_min_size(pos2(sx, cy - 11.0), vec2(w, 22.0));
+            let on = *sn == self.season;
+            if on {
+                p.rect_filled(cell, 0.0, pal.raise);
+                p.rect_filled(Rect::from_min_max(pos2(cell.left(), cell.bottom() - 2.0), cell.right_bottom()), 0.0, pal.accent);
+            }
+            text(p, cell.center(), Align2::CENTER_CENTER, &t, 11.0, if on { pal.text } else { pal.faint });
+            if ui.interact(cell, ui.scope_id().with(("season", *sn)), Sense::CLICK).clicked() {
+                self.season = *sn;
+                self.focus = 0;
+                self.rebuild_catalog_view();
+            }
+            sx += w + 4.0;
+        }
+        if seasons.len() > 1 {
+            if let Some((cap, _)) = self.glyph(Context::Browser, Action::PageDown) {
+                chip(p, pos2(sx + 2.0, cy), &cap, 10.0, pal.dim, pal.raise);
+            }
+        }
     }
 
     fn draw_detail(&mut self, ui: &mut egui::Ui, r: Rect) -> Vec<Action> {
