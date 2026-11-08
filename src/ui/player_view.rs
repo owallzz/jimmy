@@ -17,7 +17,7 @@ impl App {
         }
 
         // Mouse: moving shows the controls; click pauses; double-click toggles fullscreen.
-        let resp = ui.interact(rect, ui.scope_id().with("video"), Sense::click());
+        let resp = ui.interact(rect, ui.scope_id().with("video"), Sense::CLICK);
         if ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO) && resp.hovered() {
             self.show_osd();
         }
@@ -121,7 +121,10 @@ impl App {
         let sy = rect.bottom() - 46.0;
         let cur = fmt_time(s.time_pos);
         let rem = format!("−{}", fmt_time((s.duration - s.time_pos).max(0.0)));
-        let l = text(&p, pos2(rect.left() + 24.0, sy), Align2::LEFT_CENTER, &cur, 15.0, white(0.72));
+        // Play/pause state is just an icon, right before the track.
+        let icon = if s.paused { "||" } else { "▶" };
+        let ir = text(&p, pos2(rect.left() + 24.0, sy), Align2::LEFT_CENTER, icon, 13.0, with_alpha(self.pal.accent, 0.8));
+        let l = text(&p, pos2(ir.right() + 12.0, sy), Align2::LEFT_CENTER, &cur, 15.0, white(0.72));
         let r = text(&p, pos2(rect.right() - 24.0, sy), Align2::RIGHT_CENTER, &rem, 15.0, white(0.45));
         let track = Rect::from_min_max(pos2(l.right() + 14.0, sy - 2.0), pos2(r.left() - 14.0, sy + 2.0));
         p.rect_filled(track, 0.0, white(0.2));
@@ -135,7 +138,7 @@ impl App {
 
             // Click / drag on the bar to seek.
             let hit = track.expand2(vec2(0.0, 10.0));
-            let sresp = ui.interact(hit, ui.scope_id().with("seek"), Sense::click_and_drag());
+            let sresp = ui.interact(hit, ui.scope_id().with("seek"), Sense::CLICK | Sense::DRAG);
             if let Some(pos) = sresp.interact_pointer_pos().filter(|_| sresp.clicked() || sresp.dragged()) {
                 let f = ((pos.x - track.left()) / track.width()).clamp(0.0, 1.0) as f64;
                 if let Some(pl) = &self.player {
@@ -154,8 +157,6 @@ impl App {
 
         let iy = rect.bottom() - 16.0;
         let mut x = rect.left() + 24.0;
-        let st = if s.paused { "|| PAUSED" } else { "▶ PLAYING" };
-        x = text(&p, pos2(x, iy), Align2::LEFT_CENTER, st, 13.0, with_alpha(self.pal.accent, 0.75)).right() + 18.0;
         let mut item = |k: &str, v: String| {
             let kr = text(&p, pos2(x, iy), Align2::LEFT_CENTER, k, 13.0, white(0.4));
             let vr = text(&p, pos2(kr.right() + 7.0, iy), Align2::LEFT_CENTER, v, 13.0, white(0.65));

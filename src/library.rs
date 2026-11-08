@@ -43,6 +43,8 @@ impl Entry {
 
 #[derive(Clone, Debug)]
 pub struct Listing {
+    /// True for the "My media" listing (every root, recursively).
+    pub all: bool,
     pub dir: PathBuf,
     pub entries: Vec<Entry>,
     pub error: Option<String>,
@@ -51,7 +53,7 @@ pub struct Listing {
 pub fn list_dir(dir: &Path) -> Listing {
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
-        Err(e) => return Listing { dir: dir.into(), entries: vec![], error: Some(e.to_string()) },
+        Err(e) => return Listing { all: false, dir: dir.into(), entries: vec![], error: Some(e.to_string()) },
     };
     let mut dirs = Vec::new();
     let mut media = Vec::new();
@@ -108,7 +110,42 @@ pub fn list_dir(dir: &Path) -> Listing {
     dirs.sort_by_key(key);
     media.sort_by_key(key);
     dirs.extend(media);
-    Listing { dir: dir.into(), entries: dirs, error: None }
+    Listing { all: false, dir: dir.into(), entries: dirs, error: None }
+}
+
+/// Every media file under the given folders (for "My media"). One `read_dir` per folder,
+/// still no file probing. Stops descending after `MAX_DEPTH` levels.
+pub fn list_all(roots: &[PathBuf]) -> Listing {
+    const MAX_DEPTH: usize = 8;
+    let mut files: Vec<Entry> = Vec::new();
+    let mut stack: Vec<(PathBuf, usize)> = roots.iter().map(|r| (r.clone(), 0)).collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut errors = Vec::new();
+    while let Some((dir, depth)) = stack.pop() {
+        // Avoid symlink loops and roots nested inside other roots.
+        let key = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+        if !seen.insert(key) {
+            continue;
+        }
+        let l = list_dir(&dir);
+        if let Some(e) = l.error {
+            if depth == 0 {
+                errors.push(format!("{}: {e}", dir.display()));
+            }
+            continue;
+        }
+        for e in l.entries {
+            if e.is_dir {
+                if depth < MAX_DEPTH {
+                    stack.push((e.path, depth + 1));
+                }
+            } else {
+                files.push(e);
+            }
+        }
+    }
+    files.sort_by_cached_key(|e| natural_key(&e.name));
+    Listing { all: true, dir: PathBuf::new(), entries: files, error: errors.first().cloned() }
 }
 
 /// Case-insensitive sort key where "Episode 2" comes before "Episode 10".
@@ -148,25 +185,34 @@ fn lower_io_priority() {
 #[cfg(not(target_os = "linux"))]
 fn lower_io_priority() {}
 
+#[derive(Clone, Debug)]
+enum Request {
+    Dir(PathBuf),
+    All(Vec<PathBuf>),
+}
+
 pub struct Scanner {
-    tx: Sender<PathBuf>,
+    tx: Sender<Request>,
     rx: Receiver<Listing>,
 }
 
 impl Scanner {
     pub fn new(ctx: egui::Context) -> Self {
-        let (req_tx, req_rx) = channel::<PathBuf>();
+        let (req_tx, req_rx) = channel::<Request>();
         let (res_tx, res_rx) = channel::<Listing>();
         std::thread::Builder::new()
             .name("scanner".into())
             .spawn(move || {
                 lower_io_priority();
-                while let Ok(mut dir) = req_rx.recv() {
+                while let Ok(mut req) = req_rx.recv() {
                     // Only the newest request matters if several queued up.
                     while let Ok(newer) = req_rx.try_recv() {
-                        dir = newer;
+                        req = newer;
                     }
-                    let listing = list_dir(&dir);
+                    let listing = match &req {
+                        Request::Dir(d) => list_dir(d),
+                        Request::All(roots) => list_all(roots),
+                    };
                     if res_tx.send(listing).is_err() {
                         break;
                     }
@@ -178,7 +224,11 @@ impl Scanner {
     }
 
     pub fn request(&self, dir: &Path) {
-        let _ = self.tx.send(dir.to_path_buf());
+        let _ = self.tx.send(Request::Dir(dir.to_path_buf()));
+    }
+
+    pub fn request_all(&self, roots: &[PathBuf]) {
+        let _ = self.tx.send(Request::All(roots.to_vec()));
     }
 
     pub fn poll(&self) -> Option<Listing> {
@@ -212,6 +262,12 @@ mod tests {
         let names: Vec<_> = l.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["Season 1", "Movie (2020).mkv"]);
         assert_eq!(l.entries[1].subs, ["en.srt", "es.srt"]);
+        std::fs::write(d.join("Season 1/Ep 2.mkv"), b"x").unwrap();
+        std::fs::write(d.join("Season 1/Ep 10.mkv"), b"x").unwrap();
+        // Listing a root twice (or nested roots) must not duplicate files.
+        let all = list_all(&[d.clone(), d.join("Season 1")]);
+        let names: Vec<_> = all.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Ep 2.mkv", "Ep 10.mkv", "Movie (2020).mkv"]);
         std::fs::remove_dir_all(d).unwrap();
     }
 }

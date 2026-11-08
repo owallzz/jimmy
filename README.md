@@ -48,23 +48,27 @@ System volume works through `osascript`; there is no backlight control on macOS.
 
 ## Controls (defaults, all remappable in Settings → Controls)
 
-| | Keyboard | Gamepad |
-|---|---|---|
-| Move / open | ↑ ↓ / Enter | D-pad / A (✕) |
-| Back / up a folder | Backspace, Esc | B (○) |
-| Play from start | Shift+Enter | X (□) |
-| Command palette | Ctrl+P | Y (△) in the browser |
-| Menu (folders, settings) | Tab | ≡ |
-| Play / pause | Space | A (✕) |
-| Seek ±10 s / ±60 s | ← → / Shift+← → | D-pad ◀ ▶ / LB RB |
-| Volume | ↑ ↓ | D-pad ▲ ▼ |
-| Brightness | PgUp / PgDn | right stick ▲ ▼ |
-| Subtitles / audio track | J / A | X (□) / Y (△) |
-| Tracks panel | T | ≡ |
-| Fullscreen | F11, F (player) | View |
+| | Keyboard | vim | Gamepad |
+|---|---|---|---|
+| Move | ↑ ↓ | j k, `5j`, gg / G, Ctrl+D / Ctrl+U | D-pad, left stick |
+| Open / up a folder | Enter, → / Backspace, ← | l / h | A (✕) / B (○) |
+| Play from start | Shift+Enter | o | X (□) |
+| Filter the list | / | / | — |
+| Command palette | Ctrl+P | : | Y (△) in the browser |
+| Menu (My media, folders, settings) | Tab | | ≡ |
+| Close a menu | Esc | q | B (○) |
+| Play / pause | Space | | A (✕) |
+| Seek ±10 s / ±60 s | ← → / Shift+← → | h l / H L | D-pad ◀ ▶ / LB RB |
+| Volume | ↑ ↓ | k j | D-pad ▲ ▼ |
+| Brightness | PgUp / PgDn | | right stick ▲ ▼ |
+| Subtitles / audio track | C / A | | X (□) / Y (△) |
+| Tracks panel | T | | ≡ |
+| Stop | Backspace | q | B (○) twice |
+| Fullscreen | F11, F (player) | | View |
 
-Typing in the browser filters the list. Settings live in `~/.config/jimmy/` (`config.toml`,
-`bindings.toml`), history in `~/.local/share/jimmy/state.toml`.
+In the browser, press `/` to filter: type, Enter keeps the filter, Esc clears it. Settings live in
+`~/.config/jimmy/` (`config.toml`, `bindings.toml`), history in `~/.local/share/jimmy/state.toml`.
+The clock is 12-hour by default; switch to 24-hour in Settings → General.
 
 ## Command line
 
@@ -77,5 +81,7 @@ For testing, `--actions` runs a script of actions and can save screenshots:
 
 ```bash
 jimmy ~/Videos --actions "wait:1000,down,accept,wait:3000,screenshot:/tmp/player.png,quit"
+jimmy --actions "key:j,key:Slash,type:moon,key:Enter,quit"   # real key presses and typing
 JIMMY_FAKE_PAD=ps jimmy ...   # show PlayStation button hints without a controller
+JIMMY_HOME=/tmp/jimmy-test jimmy ...   # use a separate config/history folder
 ```

@@ -22,6 +22,7 @@ pub(crate) enum Cmd {
     Act(Action),
     Open(PathBuf),
     Theme(usize),
+    All,
     Continue,
     Recent,
 }
@@ -38,6 +39,7 @@ impl App {
     pub(crate) fn menu_items(&self) -> Vec<MenuItem> {
         let mut v = vec![
             MenuItem::Header("Library"),
+            MenuItem::Source(Source::All, "My media".into(), self.all_cache.as_ref().map(|c| c.len())),
             MenuItem::Source(Source::Continue, "Continue watching".into(), Some(self.hist.recent(true).len())),
             MenuItem::Source(Source::Recent, "Recently played".into(), None),
             MenuItem::Header("Folders"),
@@ -97,7 +99,7 @@ impl App {
         let pal = self.pal;
         let p = ui.painter().clone();
         let mut out = Vec::new();
-        let dim = ui.interact(rect, ui.scope_id().with("menu-dim"), Sense::click());
+        let dim = ui.interact(rect, ui.scope_id().with("menu-dim"), Sense::CLICK);
         p.rect_filled(rect, 0.0, black(0.55));
         let w = 320.0;
         let r = Rect::from_min_size(rect.min, vec2(w, rect.height()));
@@ -132,6 +134,7 @@ impl App {
                     }
                     let fg = if focused { pal.ink } else if current { pal.accent } else { pal.text };
                     let (icon, label, count) = match item {
+                        MenuItem::Source(Source::All, l, c) => ("▦", l.clone(), *c),
                         MenuItem::Source(Source::Continue, l, c) => ("▶", l.clone(), *c),
                         MenuItem::Source(Source::Recent, l, c) => ("◷", l.clone(), *c),
                         MenuItem::Source(Source::Dir(_), l, c) => ("▤", l.clone(), *c),
@@ -145,7 +148,7 @@ impl App {
                     if let Some(c) = count.filter(|c| *c > 0) {
                         text(&p, pos2(row.right() - 20.0, row.center().y), Align2::RIGHT_CENTER, c.to_string(), 12.0, ic);
                     }
-                    let resp = ui.interact(row, ui.scope_id().with(("menu", i)), Sense::click());
+                    let resp = ui.interact(row, ui.scope_id().with(("menu", i)), Sense::CLICK);
                     if resp.hovered() && ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO) {
                         self.menu_focus = si;
                     }
@@ -173,6 +176,7 @@ impl App {
             .filter(|a| a.in_palette())
             .map(|a| PaletteRow { cat: a.category().into(), name: a.name().into(), cmd: Cmd::Act(*a) })
             .collect();
+        rows.push(PaletteRow { cat: "Go to".into(), name: "My media".into(), cmd: Cmd::All });
         rows.push(PaletteRow { cat: "Go to".into(), name: "Continue watching".into(), cmd: Cmd::Continue });
         rows.push(PaletteRow { cat: "Go to".into(), name: "Recently played".into(), cmd: Cmd::Recent });
         for r in &self.cfg.roots {
@@ -231,11 +235,15 @@ impl App {
                         self.open_dir(p, None);
                     }
                     Cmd::Theme(i) => self.set_theme(ctx, i),
-                    Cmd::Continue | Cmd::Recent => {
+                    Cmd::All | Cmd::Continue | Cmd::Recent => {
                         if self.screen == Screen::Player {
                             self.stop();
                         }
-                        self.open_source(if matches!(row.cmd, Cmd::Continue) { Source::Continue } else { Source::Recent });
+                        self.open_source(match row.cmd {
+                            Cmd::All => Source::All,
+                            Cmd::Continue => Source::Continue,
+                            _ => Source::Recent,
+                        });
                     }
                 }
             }
@@ -247,7 +255,7 @@ impl App {
         let pal = self.pal;
         let mut out = Vec::new();
         let p = ui.painter().clone();
-        let dim = ui.interact(rect, ui.scope_id().with("pal-dim"), Sense::click());
+        let dim = ui.interact(rect, ui.scope_id().with("pal-dim"), Sense::CLICK);
         p.rect_filled(rect, 0.0, black(0.55));
         let w = (rect.width() * 0.6).clamp(420.0, 820.0);
         let row_h = 38.0;
@@ -320,7 +328,7 @@ impl App {
                     text(&p, pos2(rr.right() - 16.0, y), Align2::RIGHT_CENTER, "current", 11.0, catc);
                 }
             }
-            let resp = ui.interact(rr, ui.scope_id().with(("pal", i)), Sense::click());
+            let resp = ui.interact(rr, ui.scope_id().with(("pal", i)), Sense::CLICK);
             if resp.clicked() {
                 self.palette_focus = i;
                 out.push(Action::Accept);
@@ -459,7 +467,7 @@ impl App {
         let pal = self.pal;
         let mut out = Vec::new();
         let p = ui.painter().clone();
-        let dim = ui.interact(rect, ui.scope_id().with("tr-dim"), Sense::click());
+        let dim = ui.interact(rect, ui.scope_id().with("tr-dim"), Sense::CLICK);
         p.rect_filled(rect, 0.0, black(0.5));
         let w = (rect.width() * 0.32).clamp(340.0, 440.0);
         let r = Rect::from_min_max(pos2(rect.right() - w, rect.top()), rect.right_bottom());
@@ -487,7 +495,7 @@ impl App {
                 p.rect_filled(cell, 0.0, pal.accent);
             }
             text(&p, cell.center(), Align2::CENTER_CENTER, *t, 12.0, if on { pal.ink } else { pal.dim });
-            if ui.interact(cell, ui.scope_id().with(("tab", i)), Sense::click()).clicked() {
+            if ui.interact(cell, ui.scope_id().with(("tab", i)), Sense::CLICK).clicked() {
                 self.tracks_tab = i;
                 self.tracks_focus = 0;
             }
@@ -530,7 +538,7 @@ impl App {
                     let fg = if focused { pal.ink } else { pal.text };
                     text_clip(&p, pos2(rr.left() + 38.0, cy), w * 0.55, label, 15.0, fg);
                     text_clip_right(&p, pos2(rr.right() - 16.0, cy), w * 0.4, meta, 12.0, if focused { pal.ink } else { pal.dim });
-                    if ui.interact(rr, ui.scope_id().with(("trk", i)), Sense::click()).clicked() {
+                    if ui.interact(rr, ui.scope_id().with(("trk", i)), Sense::CLICK).clicked() {
                         self.tracks_focus = si.unwrap_or(0);
                         out.push(Action::Accept);
                     }
@@ -549,11 +557,11 @@ impl App {
                     let lr = text(&p, pos2(right - 120.0, cy), Align2::LEFT_CENTER, "◀", 11.0, ac);
                     text(&p, pos2(right - 60.0, cy), Align2::CENTER_CENTER, value, 14.0, fg);
                     let rr2 = text(&p, pos2(right, cy), Align2::RIGHT_CENTER, "▶", 11.0, ac);
-                    if ui.interact(lr.expand(6.0), ui.scope_id().with(("l", i)), Sense::click()).clicked() {
+                    if ui.interact(lr.expand(6.0), ui.scope_id().with(("l", i)), Sense::CLICK).clicked() {
                         self.tracks_focus = si.unwrap_or(0);
                         out.push(Action::Left);
                     }
-                    if ui.interact(rr2.expand(6.0), ui.scope_id().with(("r", i)), Sense::click()).clicked() {
+                    if ui.interact(rr2.expand(6.0), ui.scope_id().with(("r", i)), Sense::CLICK).clicked() {
                         self.tracks_focus = si.unwrap_or(0);
                         out.push(Action::Right);
                     }

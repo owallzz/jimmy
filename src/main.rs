@@ -27,7 +27,8 @@ OPTIONS:
     --windowed              Start in a window.
     --size WxH              Window size.
     --actions LIST          Run comma-separated actions after startup (for testing),
-                            e.g. down,down,accept,wait:2000,screenshot:/tmp/a.png,quit
+                            e.g. down,accept,wait:2000,screenshot:/tmp/a.png,quit
+                            key:j and type:text send real key presses and typing
     -h, --help              Show this help.
     -V, --version           Show the version.
 ";
@@ -41,6 +42,10 @@ fn parse_steps(list: &str) -> Result<Vec<Step>, String> {
                 ms.parse().map(Step::Wait).map_err(|_| format!("bad wait: {s}"))
             } else if let Some(p) = s.strip_prefix("screenshot:") {
                 Ok(Step::Screenshot(PathBuf::from(p)))
+            } else if let Some(k) = s.strip_prefix("key:") {
+                k.parse().map(Step::Key).map_err(|e| format!("{s}: {e}"))
+            } else if let Some(t) = s.strip_prefix("type:") {
+                Ok(Step::Type(t.to_string()))
             } else if s == "quit" {
                 Ok(Step::Quit)
             } else {

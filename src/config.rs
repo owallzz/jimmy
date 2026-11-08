@@ -12,13 +12,24 @@ pub fn project_dirs() -> Option<directories::ProjectDirs> {
     directories::ProjectDirs::from("", "", "jimmy")
 }
 
+/// `JIMMY_HOME` puts config and history in one folder (handy for testing).
+fn home_override() -> Option<PathBuf> {
+    std::env::var_os("JIMMY_HOME").map(PathBuf::from)
+}
+
 pub fn config_dir() -> PathBuf {
+    if let Some(h) = home_override() {
+        return h;
+    }
     project_dirs()
         .map(|d| d.config_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from(".jimmy"))
 }
 
 pub fn data_dir() -> PathBuf {
+    if let Some(h) = home_override() {
+        return h;
+    }
     project_dirs()
         .map(|d| d.data_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from(".jimmy"))
@@ -53,6 +64,8 @@ pub struct Config {
     /// Multiplies every size in the UI.
     pub ui_scale: f32,
     pub show_hints: bool,
+    /// 24-hour clock instead of 12-hour with AM/PM.
+    pub clock_24h: bool,
     /// How long the player controls stay up after input.
     pub osd_timeout_ms: u64,
     /// Highest volume allowed: 100 = no boost, up to 200.
@@ -88,6 +101,7 @@ impl Default for Config {
             start_fullscreen: false,
             ui_scale: 1.0,
             show_hints: true,
+            clock_24h: false,
             osd_timeout_ms: 3000,
             volume_max: 200,
             reset_boost_on_new_file: true,

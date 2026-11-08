@@ -36,6 +36,8 @@ pub enum Overlay {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Source {
     Dir(PathBuf),
+    /// "My media": everything in every library folder.
+    All,
     Continue,
     Recent,
 }
@@ -57,6 +59,10 @@ enum Hud {
 #[derive(Clone, Debug)]
 pub enum Step {
     Act(Action),
+    /// A real key press, e.g. `key:j` or `key:Shift+G`.
+    Key(KeyChord),
+    /// Typed text, e.g. `type:moon`.
+    Type(String),
     Wait(u64),
     Screenshot(PathBuf),
     Quit,
@@ -82,11 +88,17 @@ pub struct App {
     pub(crate) loading: bool,
     pub(crate) list_error: Option<String>,
     pub(crate) filter: String,
+    /// Typing goes into the filter (entered with `/`).
+    pub(crate) filtering: bool,
+    pending_g: Option<Instant>,
+    count: Option<u32>,
     pub(crate) focus: usize,
     pub(crate) scroll: f32,
     pub(crate) scroll_focus: usize,
     /// Selection to restore when coming back up to a folder.
     remembered: Vec<(PathBuf, PathBuf)>,
+    /// Last "My media" listing, shown instantly while a fresh scan runs.
+    pub(crate) all_cache: Option<Vec<Entry>>,
     want_focus: Option<PathBuf>,
 
     pub(crate) screen: Screen,
@@ -132,6 +144,7 @@ pub struct App {
 
     steps: Vec<Step>,
     step_at: Instant,
+    injected: Vec<egui::Event>,
     fullscreen: bool,
 }
 
@@ -144,6 +157,7 @@ impl App {
         let pal = theme::palette(theme::id_at(theme_idx));
         theme::apply(&ctx, &pal);
         ctx.set_zoom_factor(cfg.ui_scale);
+        draw::set_clock_24h(cfg.clock_24h);
         setup_fonts(&ctx);
 
         let player = match Player::new(ctx.clone(), &cfg) {
@@ -166,10 +180,14 @@ impl App {
             loading: false,
             list_error: None,
             filter: String::new(),
+            filtering: false,
+            pending_g: None,
+            count: None,
             focus: 0,
             scroll: 0.0,
             scroll_focus: usize::MAX,
             remembered: vec![],
+            all_cache: None,
             want_focus: None,
             screen: Screen::Browser,
             overlay: Overlay::None,
@@ -205,6 +223,7 @@ impl App {
             listening: None,
             steps: startup.steps,
             step_at: Instant::now(),
+            injected: vec![],
             fullscreen: startup.fullscreen,
             binds: Bindings::load(),
             theme_idx,
@@ -269,11 +288,27 @@ impl App {
         self.loading = true;
         self.source = Source::Dir(dir);
         self.filter.clear();
+        self.filtering = false;
     }
 
     pub(crate) fn open_source(&mut self, src: Source) {
         match src {
             Source::Dir(d) => self.open_dir(d, None),
+            Source::All => {
+                self.remember_focus();
+                self.source = Source::All;
+                self.filter.clear();
+                self.list_error = None;
+                self.loading = true;
+                self.scanner.request_all(&self.cfg.roots);
+                let cached = self.all_cache.clone();
+                if let Some(entries) = cached {
+                    let items = entries.into_iter().map(|e| self.item(e)).collect();
+                    self.set_items(items);
+                } else {
+                    self.set_items(vec![]);
+                }
+            }
             virt => {
                 self.remember_focus();
                 self.source = virt;
@@ -281,6 +316,11 @@ impl App {
                 self.rebuild_virtual();
             }
         }
+    }
+
+    fn item(&self, entry: Entry) -> Item {
+        let hist = self.hist.get(&entry.path).cloned();
+        Item { entry, hist }
     }
 
     fn remember_focus(&mut self) {
@@ -582,7 +622,8 @@ impl App {
     fn collect_input(&mut self, ctx: &egui::Context) -> Vec<Action> {
         let mut actions = Vec::new();
         let events = ctx.input(|i| i.events.clone());
-        let text_mode = self.overlay == Overlay::Palette;
+        let browser_filtering = self.filtering && self.context() == Context::Browser;
+        let text_mode = self.overlay == Overlay::Palette || browser_filtering;
         for ev in events {
             match ev {
                 egui::Event::Key { key, pressed: true, modifiers, .. } => {
@@ -603,48 +644,69 @@ impl App {
                         }
                         continue;
                     }
+                    if browser_filtering {
+                        match key {
+                            egui::Key::Enter => {
+                                self.filtering = false;
+                                continue;
+                            }
+                            egui::Key::Escape => {
+                                self.filtering = false;
+                                self.filter.clear();
+                                self.apply_filter();
+                                continue;
+                            }
+                            egui::Key::Backspace => {
+                                if self.filter.pop().is_none() {
+                                    self.filtering = false;
+                                }
+                                self.apply_filter();
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
                     if text_mode
                         && (chord.is_plain_text()
                             || matches!(key, egui::Key::Backspace | egui::Key::Delete | egui::Key::ArrowLeft | egui::Key::ArrowRight | egui::Key::Home | egui::Key::End))
                     {
                         continue;
                     }
-                    if self.context() == Context::Browser {
-                        if key == egui::Key::Backspace && !self.filter.is_empty() && !chord.ctrl {
-                            self.filter.pop();
-                            self.apply_filter();
+                    let ctxt = self.context();
+                    // vim: `gg` jumps to the top, digits are a count for the next motion (5j).
+                    if matches!(ctxt, Context::Browser | Context::List) && !chord.ctrl && !chord.alt && !chord.shift {
+                        if key == egui::Key::G {
+                            if self.pending_g.is_some_and(|t| t.elapsed() < Duration::from_millis(800)) {
+                                self.pending_g = None;
+                                actions.push(Action::Home);
+                            } else {
+                                self.pending_g = Some(Instant::now());
+                            }
                             continue;
                         }
-                        if key == egui::Key::Escape && !self.filter.is_empty() {
-                            self.filter.clear();
-                            self.apply_filter();
-                            continue;
+                        if let Some(d) = digit(key) {
+                            if d > 0 || self.count.is_some() {
+                                self.count = Some((self.count.unwrap_or(0) * 10 + d).min(999));
+                                continue;
+                            }
                         }
                     }
-                    let ctxt = self.context();
+                    self.pending_g = None;
+                    let count = self.count.take().unwrap_or(1);
                     if let Some(a) = self.binds.key_action(ctxt, chord) {
-                        // In the browser, plain letters go to the filter unless explicitly bound there.
-                        if ctxt == Context::Browser
-                            && chord.is_plain_text()
-                            && self.binds.key_action(Context::Browser, chord).is_none()
-                        {
-                            continue;
+                        let n = if a.repeats() { count.min(200) } else { 1 };
+                        for _ in 0..n {
+                            actions.push(a);
                         }
-                        actions.push(a);
                     }
                 }
                 egui::Event::Text(t) => {
-                    if self.context() == Context::Browser && self.listening.is_none() {
+                    if browser_filtering && self.listening.is_none() {
                         let mods = ctx.input(|i| i.modifiers);
                         if !mods.ctrl && !mods.mac_cmd && !mods.alt {
-                            let chord_bound = t.chars().count() == 1
-                                && egui::Key::from_name(&t.to_uppercase())
-                                    .is_some_and(|k| self.binds.key_action(Context::Browser, KeyChord::new(k)).is_some());
-                            if !chord_bound && !(self.filter.is_empty() && t == " ") {
-                                self.filter.push_str(&t);
-                                self.apply_filter();
-                                self.focus = 0;
-                            }
+                            self.filter.push_str(&t);
+                            self.apply_filter();
+                            self.focus = 0;
                         }
                     }
                 }
@@ -785,6 +847,7 @@ impl App {
                 }
             }
             Back | Left => self.go_up(),
+            Filter => self.filtering = true,
             Menu => {
                 self.overlay = Overlay::Menu;
                 self.menu_focus = self.menu_current();
@@ -880,7 +943,7 @@ impl App {
             let r = draw::chip(p, egui::pos2(x, pos.y), &cap, size * 0.85, color.unwrap_or(fg), cap_bg);
             let t = draw::text(p, egui::pos2(r.right() + size * 0.45, pos.y), egui::Align2::LEFT_CENTER, label, size, fg);
             let hit = r.union(t);
-            if ui.interact(hit, ui.scope_id().with(("hint", *a, label)), egui::Sense::click()).clicked() {
+            if ui.interact(hit, ui.scope_id().with(("hint", *a, label)), egui::Sense::CLICK).clicked() {
                 clicked.push(*a);
             }
             x = t.right() + gap;
@@ -903,6 +966,20 @@ impl App {
                     out.push(a);
                     self.step_at = Instant::now() + Duration::from_millis(120);
                     ctx.request_repaint_after(Duration::from_millis(120));
+                    break;
+                }
+                Step::Key(chord) => {
+                    let modifiers = egui::Modifiers { ctrl: chord.ctrl, shift: chord.shift, alt: chord.alt, command: chord.ctrl, ..Default::default() };
+                    self.injected.push(egui::Event::Key { key: chord.key, physical_key: None, pressed: true, repeat: false, modifiers });
+                    self.injected.push(egui::Event::Key { key: chord.key, physical_key: None, pressed: false, repeat: false, modifiers });
+                    self.step_at = Instant::now() + Duration::from_millis(120);
+                    ctx.request_repaint();
+                    break;
+                }
+                Step::Type(t) => {
+                    self.injected.push(egui::Event::Text(t));
+                    self.step_at = Instant::now() + Duration::from_millis(120);
+                    ctx.request_repaint();
                     break;
                 }
                 Step::Wait(ms) => {
@@ -928,6 +1005,23 @@ impl App {
         }
         out
     }
+}
+
+fn digit(k: egui::Key) -> Option<u32> {
+    use egui::Key::*;
+    Some(match k {
+        Num0 => 0,
+        Num1 => 1,
+        Num2 => 2,
+        Num3 => 3,
+        Num4 => 4,
+        Num5 => 5,
+        Num6 => 6,
+        Num7 => 7,
+        Num8 => 8,
+        Num9 => 9,
+        _ => return None,
+    })
 }
 
 fn save_png(path: &Path, img: &egui::ColorImage) -> anyhow::Result<()> {
@@ -986,17 +1080,14 @@ impl eframe::App for App {
         }
 
         if let Some(l) = self.scanner.poll() {
-            if Source::Dir(l.dir.clone()) == self.source {
+            let wanted = if l.all { self.source == Source::All } else { Source::Dir(l.dir.clone()) == self.source };
+            if l.all {
+                self.all_cache = Some(l.entries.clone());
+            }
+            if wanted {
                 self.loading = false;
                 self.list_error = l.error.clone();
-                let items = l
-                    .entries
-                    .into_iter()
-                    .map(|e| {
-                        let hist = self.hist.get(&e.path).cloned();
-                        Item { entry: e, hist }
-                    })
-                    .collect();
+                let items = l.entries.into_iter().map(|e| self.item(e)).collect();
                 self.set_items(items);
             }
         }
@@ -1053,6 +1144,10 @@ impl eframe::App for App {
         if self.screen == Screen::Browser {
             ctx.request_repaint_after(Duration::from_secs(20));
         }
+    }
+
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        raw.events.append(&mut self.injected);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

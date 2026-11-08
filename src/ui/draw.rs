@@ -135,9 +135,30 @@ pub fn local_hm(unix: i64) -> (u32, u32) {
     (((unix / 3600) % 24) as u32, ((unix / 60) % 60) as u32)
 }
 
+static CLOCK_24H: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Switch every clock in the UI between 12-hour (default) and 24-hour.
+pub fn set_clock_24h(on: bool) {
+    CLOCK_24H.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn format_clock(h: u32, m: u32, h24: bool) -> String {
+    if h24 {
+        format!("{h:02}:{m:02}")
+    } else {
+        let (h12, ampm) = match h {
+            0 => (12, "AM"),
+            1..=11 => (h, "AM"),
+            12 => (12, "PM"),
+            _ => (h - 12, "PM"),
+        };
+        format!("{h12}:{m:02} {ampm}")
+    }
+}
+
 pub fn clock_at(unix: i64) -> String {
     let (h, m) = local_hm(unix);
-    format!("{h:02}:{m:02}")
+    format_clock(h, m, CLOCK_24H.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 pub fn now_unix() -> i64 {
@@ -169,5 +190,10 @@ mod tests {
         assert_eq!(fmt_dur_short(2480.0), "41m");
         assert_eq!(fmt_dur_short(6833.0), "1h 54m");
         assert_eq!(fmt_size(7_300_000_000), "7.3 GB");
+        assert_eq!(format_clock(0, 5, false), "12:05 AM");
+        assert_eq!(format_clock(12, 0, false), "12:00 PM");
+        assert_eq!(format_clock(17, 36, false), "5:36 PM");
+        assert_eq!(format_clock(17, 36, true), "17:36");
+        assert_eq!(format_clock(7, 3, true), "07:03");
     }
 }

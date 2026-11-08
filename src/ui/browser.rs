@@ -34,6 +34,7 @@ impl App {
                 });
                 (par.unwrap_or_default(), cur)
             }
+            Source::All => (String::new(), "My media".into()),
             Source::Continue => (String::new(), "Continue watching".into()),
             Source::Recent => (String::new(), "Recently played".into()),
         };
@@ -49,13 +50,22 @@ impl App {
 
         let filter_w = (rect.width() * 0.24).clamp(160.0, 460.0);
         let fr = Rect::from_min_size(pos2(x, hy - 14.0), vec2(filter_w, 28.0));
-        p.rect_filled(fr, 0.0, pal.panel);
+        p.rect_filled(fr, 0.0, if self.filtering { pal.raise } else { pal.panel });
         text(&p, pos2(fr.left() + 10.0, hy), Align2::LEFT_CENTER, "/", 14.0, pal.accent);
-        if self.filter.is_empty() {
-            text(&p, pos2(fr.left() + 26.0, hy), Align2::LEFT_CENTER, "type to filter", 14.0, pal.faint);
+        if self.filter.is_empty() && !self.filtering {
+            text(&p, pos2(fr.left() + 26.0, hy), Align2::LEFT_CENTER, "filter", 14.0, pal.faint);
         } else {
             let r = text_clip(&p, pos2(fr.left() + 26.0, hy), filter_w - 40.0, &self.filter, 14.0, pal.text);
-            p.rect_filled(Rect::from_min_size(pos2(r.right() + 1.0, hy - 8.0), vec2(2.0, 16.0)), 0.0, pal.accent);
+            if self.filtering {
+                let cx = if self.filter.is_empty() { fr.left() + 26.0 } else { r.right() + 1.0 };
+                p.rect_filled(Rect::from_min_size(pos2(cx, hy - 8.0), vec2(2.0, 16.0)), 0.0, pal.accent);
+                if self.filter.is_empty() {
+                    text(&p, pos2(cx + 8.0, hy), Align2::LEFT_CENTER, "type, Enter keeps, Esc clears", 13.0, pal.faint);
+                }
+            }
+        }
+        if ui.interact(fr, ui.scope_id().with("filterbox"), Sense::CLICK).clicked() {
+            self.filtering = true;
         }
         let count = if self.loading {
             "reading…".to_string()
@@ -135,14 +145,23 @@ impl App {
             let icon_c = if focused { pal.ink } else if item.entry.is_dir { pal.accent } else { pal.faint };
             text(&p_rows, pos2(r.left() + PAD, y), Align2::LEFT_CENTER, icon, 14.0, icon_c);
             let name = if item.entry.is_dir { format!("{}/", item.entry.name) } else { item.entry.name.clone() };
-            text_clip(&p_rows, pos2(name_left, y), name_right - name_left, &name, 17.0, fg);
+            let nr = text_clip(&p_rows, pos2(name_left, y), name_right - name_left, &name, 17.0, fg);
+            // Flat lists (My media, Continue, Recent) also show which folder a file lives in.
+            if !matches!(self.source, Source::Dir(_)) {
+                if let Some(folder) = item.entry.path.parent().and_then(|d| d.file_name()) {
+                    let fx = nr.right() + 12.0;
+                    if fx + 40.0 < name_right {
+                        text_clip(&p_rows, pos2(fx, y), name_right - fx, &folder.to_string_lossy(), 13.0, if focused { pal.ink } else { pal.faint });
+                    }
+                }
+            }
 
             if item.entry.is_dir {
                 // folders: nothing else (no extra disk reads)
             } else {
                 if show_prog {
                     if watched {
-                        text(&p_rows, pos2(c_prog, y), Align2::LEFT_CENTER, "✓ WATCHED", 11.0, if focused { pal.ink } else { pal.ok });
+                        text(&p_rows, pos2(c_prog, y), Align2::LEFT_CENTER, "WATCHED", 11.0, if focused { pal.ink } else { pal.ok });
                     } else if let Some(h) = h.filter(|h| h.progress() > 0.0) {
                         let br = Rect::from_min_size(pos2(c_prog, y - 2.0), vec2(110.0, 4.0));
                         let (track, fill) = if focused { (draw::with_alpha(pal.ink, 0.25), pal.ink) } else { (pal.raise, pal.accent) };
@@ -156,7 +175,7 @@ impl App {
                 text(&p_rows, pos2(c_size, y), Align2::RIGHT_CENTER, fmt_size(item.entry.size), 15.0, dimc);
             }
 
-            let resp = ui.interact(r.intersect(rows_rect), ui.scope_id().with(("row", idx)), Sense::click());
+            let resp = ui.interact(r.intersect(rows_rect), ui.scope_id().with(("row", idx)), Sense::CLICK);
             if resp.clicked() {
                 self.focus = idx;
             }
@@ -174,6 +193,8 @@ impl App {
         } else if n == 0 {
             Some(match self.source {
                 Source::Dir(_) => "No videos or folders here".into(),
+                Source::All if self.loading => "Looking through your folders…".into(),
+                Source::All => "No media found. Add folders in Settings → Library.".into(),
                 Source::Continue => "Nothing to continue yet".into(),
                 Source::Recent => "Nothing played yet".into(),
             })
@@ -191,6 +212,7 @@ impl App {
                 (Action::Accept, "Play"),
                 (Action::Back, "Back"),
                 (Action::Options, "From start"),
+                (Action::Filter, "Filter"),
                 (Action::Palette, "Commands"),
                 (Action::Menu, "Menu"),
                 (Action::Fullscreen, "Fullscreen"),
@@ -245,6 +267,14 @@ impl App {
         } else {
             let h = item.hist.clone().unwrap_or_default();
             kv("File", &[(item.entry.name.clone(), pal.dim)]);
+            if !matches!(self.source, Source::Dir(_)) {
+                if let Some(parent) = item.entry.path.parent() {
+                    // Keep the meaningful end of the path: …/Shows/Season 1
+                    let parts: Vec<String> = parent.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+                    let short = if parts.len() > 3 { format!("…/{}", parts[parts.len() - 3..].join("/")) } else { parent.display().to_string() };
+                    kv("Folder", &[(short, pal.dim)]);
+                }
+            }
             if h.duration > 0.0 {
                 let from = if h.resumable() { h.pos } else { 0.0 };
                 let left = h.duration - from;
@@ -295,7 +325,7 @@ impl App {
         let mut by = r.bottom() - PAD - bh * buttons.len() as f32 - 6.0 * (buttons.len() as f32 - 1.0);
         for (label, action, primary) in buttons {
             let br = Rect::from_min_size(pos2(x, by), vec2(inner, bh));
-            let resp = ui.interact(br, ui.scope_id().with(("btn", label.as_str())), Sense::click());
+            let resp = ui.interact(br, ui.scope_id().with(("btn", label.as_str())), Sense::CLICK);
             let (bg, fg) = if primary { (pal.accent, pal.ink) } else { (pal.raise, pal.text) };
             let bg = if resp.hovered() && !primary { theme_mix(pal.raise, pal.accent, 0.15) } else { bg };
             p.rect_filled(br, 0.0, bg);

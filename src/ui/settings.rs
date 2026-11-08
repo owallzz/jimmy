@@ -15,6 +15,7 @@ pub(crate) enum Opt {
     StartFullscreen,
     UiScale,
     ShowHints,
+    Clock24,
     OsdTimeout,
     Resume,
     Hwdec,
@@ -54,6 +55,7 @@ impl App {
             Opt::StartFullscreen => onoff(c.start_fullscreen),
             Opt::UiScale => format!("{:.0}%", c.ui_scale * 100.0),
             Opt::ShowHints => onoff(c.show_hints),
+            Opt::Clock24 => if c.clock_24h { "24-hour".into() } else { "12-hour".into() },
             Opt::OsdTimeout => format!("{:.0} s", c.osd_timeout_ms as f64 / 1000.0),
             Opt::Resume => onoff(c.resume),
             Opt::Hwdec => c.hwdec.clone(),
@@ -77,6 +79,10 @@ impl App {
                 ctx.set_zoom_factor(c.ui_scale);
             }
             Opt::ShowHints => c.show_hints = !c.show_hints,
+            Opt::Clock24 => {
+                c.clock_24h = !c.clock_24h;
+                set_clock_24h(c.clock_24h);
+            }
             Opt::OsdTimeout => c.osd_timeout_ms = step(&[1000, 2000, 3000, 4000, 5000, 8000, 10000], c.osd_timeout_ms, dir),
             Opt::Resume => c.resume = !c.resume,
             Opt::Hwdec => {
@@ -108,6 +114,7 @@ impl App {
                 Row::Opt(Opt::StartFullscreen, "Start fullscreen"),
                 Row::Opt(Opt::UiScale, "Interface size"),
                 Row::Opt(Opt::ShowHints, "Button hints"),
+                Row::Opt(Opt::Clock24, "Clock"),
                 Row::Opt(Opt::OsdTimeout, "Hide player controls after"),
             ],
             1 => {
@@ -234,7 +241,7 @@ impl App {
         let mut out = Vec::new();
         let p = ui.painter().clone();
         // Swallow clicks on the background so they don't reach the screen underneath.
-        let _ = ui.interact(rect, ui.scope_id().with("settings-bg"), Sense::click());
+        let _ = ui.interact(rect, ui.scope_id().with("settings-bg"), Sense::CLICK);
         p.rect_filled(rect, 0.0, pal.bg);
 
         // header
@@ -258,7 +265,7 @@ impl App {
                 p.rect_filled(cell, 0.0, pal.accent);
             }
             text(&p, cell.center(), Align2::CENTER_CENTER, *t, 15.0, if on { pal.ink } else { pal.dim });
-            if ui.interact(cell, ui.scope_id().with(("stab", i)), Sense::click()).clicked() {
+            if ui.interact(cell, ui.scope_id().with(("stab", i)), Sense::CLICK).clicked() {
                 self.settings_tab = i;
                 self.settings_focus = 0;
             }
@@ -283,7 +290,7 @@ impl App {
                     p.rect_filled(Rect::from_min_max(pos2(cell.left(), cell.bottom() - 2.0), cell.right_bottom()), 0.0, pal.accent);
                 }
                 text(&p, cell.center(), Align2::CENTER_CENTER, *t, 12.0, if on { pal.text } else { pal.dim });
-                if ui.interact(cell, ui.scope_id().with(("kbsw", i)), Sense::click()).clicked() {
+                if ui.interact(cell, ui.scope_id().with(("kbsw", i)), Sense::CLICK).clicked() {
                     self.settings_kb = i == 1;
                 }
                 sx += w + 4.0;
@@ -394,7 +401,7 @@ impl App {
                     text_clip_right(&p, pos2(rx, cy), rr.width() * 0.6, v, 14.0, dimc);
                 }
             }
-            let resp = ui.interact(rr, ui.scope_id().with(("srow", i)), Sense::click());
+            let resp = ui.interact(rr, ui.scope_id().with(("srow", i)), Sense::CLICK);
             if resp.clicked() {
                 let was = self.settings_focus;
                 self.settings_focus = i;

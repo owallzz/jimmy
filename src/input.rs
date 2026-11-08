@@ -393,6 +393,8 @@ impl Bindings {
             (Global, KeyChord::new(K::F11), A::Fullscreen),
             (Global, KeyChord::alt(K::Enter), A::Fullscreen),
             (Global, c(K::P), A::Palette),
+            (Global, k(K::Colon), A::Palette),
+            (Global, s(K::Semicolon), A::Palette),
             (Global, c(K::Q), A::Quit),
             (Global, c(K::Comma), A::Settings),
             (Global, c(K::T), A::NextTheme),
@@ -411,6 +413,16 @@ impl Bindings {
             (Browser, k(K::Backspace), A::Back),
             (Browser, k(K::Escape), A::Back),
             (Browser, k(K::Tab), A::Menu),
+            (Browser, k(K::Slash), A::Filter),
+            // vim motions (gg and counts like 5j are handled in the app)
+            (Browser, k(K::J), A::Down),
+            (Browser, k(K::K), A::Up),
+            (Browser, k(K::H), A::Left),
+            (Browser, k(K::L), A::Right),
+            (Browser, s(K::G), A::End),
+            (Browser, c(K::D), A::PageDown),
+            (Browser, c(K::U), A::PageUp),
+            (Browser, k(K::O), A::Options),
             (List, k(K::ArrowUp), A::Up),
             (List, k(K::ArrowDown), A::Down),
             (List, k(K::ArrowLeft), A::Left),
@@ -425,8 +437,16 @@ impl Bindings {
             (List, k(K::Delete), A::Options),
             (List, k(K::Tab), A::NextTab),
             (List, s(K::Tab), A::PrevTab),
+            (List, k(K::J), A::Down),
+            (List, k(K::K), A::Up),
+            (List, k(K::H), A::Left),
+            (List, k(K::L), A::Right),
+            (List, s(K::G), A::End),
+            (List, c(K::D), A::PageDown),
+            (List, c(K::U), A::PageUp),
+            (List, k(K::Q), A::Back),
+            (List, k(K::X), A::Options),
             (Player, k(K::Space), A::PlayPause),
-            (Player, k(K::K), A::PlayPause),
             (Player, k(K::ArrowLeft), A::SeekBack),
             (Player, k(K::ArrowRight), A::SeekForward),
             (Player, s(K::ArrowLeft), A::SeekBackLarge),
@@ -436,8 +456,8 @@ impl Bindings {
             (Player, k(K::M), A::Mute),
             (Player, k(K::PageUp), A::BrightnessUp),
             (Player, k(K::PageDown), A::BrightnessDown),
-            (Player, k(K::J), A::NextSubtitle),
-            (Player, s(K::J), A::SubtitlesOff),
+            (Player, k(K::C), A::NextSubtitle),
+            (Player, s(K::C), A::SubtitlesOff),
             (Player, k(K::X), A::SubDelayUp),
             (Player, k(K::Z), A::SubDelayDown),
             (Player, k(K::G), A::SubSizeUp),
@@ -454,6 +474,14 @@ impl Bindings {
             (Player, k(K::Tab), A::Tracks),
             (Player, k(K::F), A::Fullscreen),
             (Player, k(K::Escape), A::Back),
+            // vim motions
+            (Player, k(K::H), A::SeekBack),
+            (Player, k(K::L), A::SeekForward),
+            (Player, s(K::H), A::SeekBackLarge),
+            (Player, s(K::L), A::SeekForwardLarge),
+            (Player, k(K::K), A::VolumeUp),
+            (Player, k(K::J), A::VolumeDown),
+            (Player, k(K::Q), A::Stop),
             (Player, k(K::Backspace), A::Stop),
         ];
         use PadInput as P;
@@ -668,6 +696,10 @@ mod tests {
         assert_eq!(b.key_action(Context::Player, KeyChord::new(egui::Key::Space)), Some(Action::PlayPause));
         assert_eq!(b.pad_action(Context::Player, PadInput::DpadUp), Some(Action::VolumeUp));
         assert_eq!(b.pad_action(Context::Browser, PadInput::DpadUp), Some(Action::Up));
+        // vim motions
+        assert_eq!(b.key_action(Context::Browser, KeyChord::new(egui::Key::J)), Some(Action::Down));
+        assert_eq!(b.key_action(Context::Player, KeyChord::new(egui::Key::L)), Some(Action::SeekForward));
+        assert_eq!(b.key_action(Context::List, KeyChord::shift(egui::Key::G)), Some(Action::End));
     }
 
     #[test]
