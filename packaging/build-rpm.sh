@@ -13,7 +13,7 @@ TARGET_DIR="${CARGO_TARGET_DIR:-$SRC/target}"
 TOPDIR="$(mktemp -d)"
 trap 'rm -rf "$TOPDIR"' EXIT
 
-echo "==> cargo build --release ($(uname -m))"
+echo "==> cargo build --release ($(uname -m), mpv: ${JIMMY_MPV_PREFIX:-system libmpv})"
 CARGO_TARGET_DIR="$TARGET_DIR" cargo build --release --locked --manifest-path "$SRC/Cargo.toml"
 
 echo "==> rpmbuild jimmy $VERSION-$RELEASE"
@@ -21,6 +21,7 @@ rpmbuild -bb "$SRC/packaging/jimmy.spec" \
     --define "_topdir $TOPDIR" \
     --define "jimmy_version $VERSION" \
     --define "jimmy_release $RELEASE" \
+    --define "jimmy_system_mpv $([ -n "${JIMMY_MPV_PREFIX:-}" ] && echo 0 || echo 1)" \
     --define "jimmy_src $SRC" \
     --define "jimmy_bin $TARGET_DIR/release/jimmy" --quiet
 

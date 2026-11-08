@@ -6,6 +6,7 @@ mod input;
 mod install;
 mod library;
 mod mem;
+mod mpv_render;
 mod meta;
 mod player;
 mod system;

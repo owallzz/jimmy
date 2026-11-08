@@ -8,8 +8,12 @@ Summary:        Lightweight, gamepad-friendly media player
 License:        LicenseRef-Proprietary
 URL:            https://github.com/owallzz/jimmy
 
-# libmpv. Install RPM Fusion's ffmpeg for H.264/HEVC support (see README).
+%if 0%{?jimmy_system_mpv}
+# Built against the system libmpv. Install RPM Fusion's ffmpeg for H.264/HEVC (see README).
 Requires:       mpv-libs
+%endif
+# Otherwise mpv and FFmpeg are built into jimmy (packaging/build-slim-mpv.sh); the small system
+# libraries they use (libva, libass, PipeWire…) are picked up automatically.
 # System volume (wpctl) and backlight/screen-awake helpers.
 Recommends:     wireplumber
 Recommends:     systemd

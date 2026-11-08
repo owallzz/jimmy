@@ -7,25 +7,12 @@ use crate::config::Config;
 use egui_glow::glow::{self, HasContext};
 use libmpv2::Mpv;
 use libmpv2::events::{Event, PropertyData};
-use libmpv2::render::{OpenGLInitParams, RenderContext, RenderParam, RenderParamApiType};
-use std::ffi::{CStr, CString, c_void};
+
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-pub type GetProcAddress = Arc<dyn Fn(&CStr) -> *const c_void + Send + Sync>;
-
-fn get_proc_address(ctx: &GetProcAddress, name: &str) -> *mut c_void {
-    match CString::new(name) {
-        Ok(c) => ctx(&c) as *mut c_void,
-        Err(_) => std::ptr::null_mut(),
-    }
-}
-
-/// mpv's render context is only touched on the UI thread (inside egui's paint callback),
-/// but egui requires callbacks to be `Send + Sync`.
-struct Renderer(RenderContext<'static>);
-unsafe impl Send for Renderer {}
-unsafe impl Sync for Renderer {}
+pub use crate::mpv_render::{DisplayHandle, GetProcAddress};
+use crate::mpv_render::Renderer;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrackKind {
@@ -295,23 +282,9 @@ impl Player {
 
     /// Creates the render context. Needs the GL loader from eframe, so it runs after startup.
     pub fn init_render(&mut self, gpa: GetProcAddress, display: Option<DisplayHandle>) -> anyhow::Result<()> {
-        let mut params = vec![
-            RenderParam::ApiType(RenderParamApiType::OpenGl),
-            RenderParam::InitParams(OpenGLInitParams { get_proc_address, ctx: gpa }),
-        ];
-        // Lets mpv share decoded frames with OpenGL directly (VA-API without copying).
-        match display {
-            Some(DisplayHandle::Wayland(p)) => params.push(RenderParam::WaylandDisplay(p)),
-            Some(DisplayHandle::X11(p)) => params.push(RenderParam::X11Display(p)),
-            None => {}
-        }
-        let mut rc = self
-            .mpv
-            .create_render_context(params)
-            .map_err(|e| anyhow::anyhow!("mpv render context: {e}"))?;
         let ctx = self.ctx.clone();
-        rc.set_update_callback(move || ctx.request_repaint());
-        *self.renderer.lock().unwrap() = Some(Renderer(rc));
+        let r = Renderer::new(self.mpv.ctx.as_ptr(), gpa, display, Box::new(move || ctx.request_repaint()))?;
+        *self.renderer.lock().unwrap() = Some(r);
         Ok(())
     }
 
@@ -513,17 +486,9 @@ impl Player {
             let Some(r) = guard.as_ref() else { return };
             let fbo = unsafe { p.gl().get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING) };
             let [w, h] = info.screen_size_px;
-            if let Err(e) = r.0.render::<GetProcAddress>(fbo, w as i32, h as i32, true) {
-                log::debug!("mpv render: {e}");
-            }
+            r.render(fbo, w as i32, h as i32);
         });
         painter.add(egui::PaintCallback { rect, callback: Arc::new(cb) });
     }
 }
 
-#[derive(Clone, Copy)]
-#[allow(dead_code)] // constructed on Linux only
-pub enum DisplayHandle {
-    Wayland(*const c_void),
-    X11(*const c_void),
-}
