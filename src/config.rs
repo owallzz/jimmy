@@ -328,6 +328,15 @@ impl History {
         self.dirty = true;
     }
 
+    /// Forget these files' history (position, watched, last played).
+    pub fn forget(&mut self, paths: &[PathBuf]) {
+        for p in paths {
+            if self.files.remove(p.to_string_lossy().as_ref()).is_some() {
+                self.dirty = true;
+            }
+        }
+    }
+
     /// Files sorted by most recently played.
     pub fn recent(&self, only_unfinished: bool) -> Vec<(PathBuf, &HistoryEntry)> {
         let mut v: Vec<_> = self

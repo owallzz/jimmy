@@ -126,6 +126,7 @@ The clock is 12-hour by default; switch to 24-hour in Settings → General.
   matches for your file first; the one you pick is added and selected, and comes back every
   time you play that video. No account or key needed. Languages: `sub_languages = "en,es"`.
 - Settings → Library → **Clear watch history** forgets positions and watched marks.
+- To forget just one movie (all its versions), episode or whole show, pick **Clear watch history** in its Options menu (□ / X / Shift+Enter). It also drops out of Continue watching and Recent.
 
 ## Command line
 

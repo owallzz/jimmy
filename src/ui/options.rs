@@ -21,6 +21,9 @@ pub(crate) enum Opt {
     RemoveFromPlaylist(PathBuf),
     /// Mark a file (or every episode of a show) watched / unwatched.
     SetWatched(bool),
+    /// Forget a file's (every version's, or every episode's) history: position, watched mark,
+    /// and its place in Continue watching / Recent.
+    ClearHistory,
     ToggleLibrary(PathBuf),
     FixMatch,
     /// A movie with several copies: choose which to play.
@@ -57,6 +60,9 @@ impl App {
                 let all_watched = show.episodes.iter().all(|(_, f)| self.hist.get(&f.path).is_some_and(|h| h.watched));
                 v.push((if all_watched { "Mark show unwatched" } else { "Mark show watched" }.into(), Opt::SetWatched(!all_watched)));
             }
+            if self.history_files(item).iter().any(|f| self.hist.get(f).is_some()) {
+                v.push(("Clear show's watch history".into(), Opt::ClearHistory));
+            }
             v.push(("Add to playlist…".into(), Opt::AddToPlaylist));
         } else if crate::playlist::is_playlist(&item.entry.path) {
             v.push(("Open".into(), Opt::Open));
@@ -83,6 +89,9 @@ impl App {
             }
             let watched = h.is_some_and(|h| h.watched);
             v.push((if watched { "Mark unwatched" } else { "Mark watched" }.into(), Opt::SetWatched(!watched)));
+            if self.history_files(item).iter().any(|f| self.hist.get(f).is_some()) {
+                v.push(("Clear watch history".into(), Opt::ClearHistory));
+            }
             if let Some(key) = self.db.file(&item.entry.path).map(|f| f.item.clone()) {
                 let nv = self.db.versions(&key).len();
                 if nv > 1 {
@@ -106,6 +115,23 @@ impl App {
         if let Some(f) = folder.filter(|f| f.is_dir()) {
             v.push(("Show in file explorer".into(), Opt::ShowInFiles(f)));
         }
+        v
+    }
+
+    /// The files whose history belongs to a row: a show's episodes, every copy (and part) of a
+    /// library movie, or just the file.
+    fn history_files(&self, item: &Item) -> Vec<PathBuf> {
+        if let Some(show) = item.show.as_ref().and_then(|k| self.catalog.show(k)) {
+            return show.episodes.iter().map(|(_, f)| f.path.clone()).collect();
+        }
+        let mut v = vec![item.entry.path.clone()];
+        if let Some(key) = self.db.file(&item.entry.path).filter(|f| f.ep.is_none() && f.extra.is_none()).map(|f| f.item.clone()) {
+            for ver in self.db.versions(&key) {
+                v.extend(self.db.movie_parts(&ver.path));
+            }
+        }
+        v.sort();
+        v.dedup();
         v
     }
 
@@ -160,6 +186,14 @@ impl App {
                 self.hist.save_if_dirty();
                 self.refresh_hist_in_items();
                 self.toast(if w { "Marked watched" } else { "Marked unwatched" });
+            }
+            Opt::ClearHistory => {
+                let Some(i) = item else { return };
+                let files = self.history_files(&i);
+                self.hist.forget(&files);
+                self.hist.save_if_dirty();
+                self.refresh_hist_in_items();
+                self.toast("Watch history cleared");
             }
             Opt::ToggleLibrary(p) => self.toggle_library(&p),
             Opt::FixMatch => self.open_fix_match(),
