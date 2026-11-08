@@ -65,6 +65,14 @@ impl Source {
     }
 }
 
+/// The show's folder for an episode: its parent, or the grandparent above "Season N".
+pub(crate) fn show_dir(episode: &Path) -> Option<PathBuf> {
+    let parent = episode.parent()?;
+    let name = parent.file_name()?.to_string_lossy().to_ascii_lowercase();
+    let is_season = name.starts_with("season") || name.starts_with("series") || (name.starts_with('s') && name[1..].chars().all(|c| c.is_ascii_digit()) && name.len() > 1);
+    Some(if is_season { parent.parent()?.to_path_buf() } else { parent.to_path_buf() })
+}
+
 /// Stand-in path for a show row (rows are keyed by path).
 pub(crate) fn show_path(key: &str) -> PathBuf {
     PathBuf::from(format!("jimmy:show/{key}"))
@@ -194,6 +202,13 @@ pub struct App {
     pub(crate) confirm_clear: Option<Instant>,
 
     sys: System,
+    /// Posters, titles and descriptions (see scrape.rs).
+    pub(crate) scrape: crate::scrape::Cache,
+    scraper: crate::scrape::Scraper,
+    scrape_wait: Option<(String, Instant)>,
+    last_scrape_write: Instant,
+    /// Poster textures, most recently used last (a handful at most).
+    posters: Vec<(PathBuf, egui::TextureHandle)>,
     meta_cache: MetaCache,
     prober: Prober,
     /// File waiting out the hover pause before it gets probed.
@@ -305,6 +320,11 @@ impl App {
             at_end: false,
             confirm_clear: None,
             sys: System::new(ctx.clone()),
+            scrape: crate::scrape::Cache::load(),
+            scraper: crate::scrape::Scraper::new(ctx.clone()),
+            scrape_wait: None,
+            last_scrape_write: Instant::now(),
+            posters: vec![],
             meta_cache: MetaCache::load(),
             prober: Prober::new(ctx.clone()),
             probe_wait: None,
@@ -694,6 +714,129 @@ impl App {
         }
     }
 
+    fn scrape_settings(&self) -> crate::scrape::Settings {
+        crate::scrape::Settings { online: self.cfg.online_metadata, tmdb_key: self.cfg.tmdb_api_key.clone() }
+    }
+
+    /// What to look up for a row: its show, or the movie it is. Library files only.
+    pub(crate) fn query_for(&self, item: &Item) -> Option<crate::scrape::Query> {
+        use crate::scrape::Query;
+        if let Some(key) = &item.show {
+            let show = self.catalog.show(key)?;
+            return Some(Query::Show { name: show.name.clone(), dir: show_dir(&show.episodes.first()?.1.path) });
+        }
+        if item.entry.is_dir || !self.in_library(&item.entry.path) || crate::playlist::is_playlist(&item.entry.path) || crate::library::is_audio(&item.entry.path) {
+            return None;
+        }
+        self.query_for_path(&item.entry.path)
+    }
+
+    pub(crate) fn query_for_path(&self, path: &Path) -> Option<crate::scrape::Query> {
+        use crate::scrape::Query;
+        match crate::media::episode(path) {
+            Some(e) => Some(Query::Show { name: e.show, dir: show_dir(path) }),
+            None => {
+                let (title, year) = crate::media::movie_title(&path.file_name()?.to_string_lossy());
+                Some(Query::Movie { title, year, file: path.to_path_buf() })
+            }
+        }
+    }
+
+    pub(crate) fn info_for_path(&self, path: &Path) -> Option<&crate::scrape::Info> {
+        self.scrape.get(&self.query_for_path(path)?.key())
+    }
+
+    pub(crate) fn info_for(&self, item: &Item) -> Option<&crate::scrape::Info> {
+        self.scrape.get(&self.query_for(item)?.key())
+    }
+
+    fn want_scrape(&mut self, q: crate::scrape::Query) {
+        // Local .nfo/posters are read even with online lookups off (scrape.rs checks the setting).
+        if !self.scrape.settled(&q.key()) {
+            let s = self.scrape_settings();
+            self.scraper.request(q, s);
+        }
+    }
+
+    /// Look up the selected row's show or movie after a short pause (like probing).
+    fn schedule_scrape(&mut self, ctx: &egui::Context) {
+        const PAUSE: Duration = Duration::from_millis(350);
+        if self.screen != Screen::Browser {
+            self.scrape_wait = None;
+            return;
+        }
+        // A show's page always wants its show.
+        if let Source::Show(key) = &self.source {
+            if let Some(show) = self.catalog.show(key) {
+                let q = crate::scrape::Query::Show { name: show.name.clone(), dir: show.episodes.first().and_then(|e| show_dir(&e.1.path)) };
+                self.want_scrape(q);
+            }
+        }
+        let Some(q) = self.items.get(self.focus).and_then(|i| self.query_for(i)) else {
+            self.scrape_wait = None;
+            return;
+        };
+        let key = q.key();
+        if self.scrape.settled(&key) {
+            self.scrape_wait = None;
+            return;
+        }
+        match &self.scrape_wait {
+            Some((k, since)) if *k == key => {
+                if since.elapsed() >= PAUSE {
+                    self.want_scrape(q);
+                    self.scrape_wait = None;
+                } else {
+                    ctx.request_repaint_after(PAUSE - since.elapsed());
+                }
+            }
+            _ => {
+                self.scrape_wait = Some((key, Instant::now()));
+                ctx.request_repaint_after(PAUSE);
+            }
+        }
+    }
+
+    fn take_scrape_results(&mut self) {
+        for (key, info) in self.scraper.poll() {
+            // A new poster file replaces the old texture.
+            if let Some(p) = &info.poster {
+                self.posters.retain(|(pp, _)| pp != p);
+            }
+            self.scrape.insert(key, info);
+        }
+        if self.last_scrape_write.elapsed() > Duration::from_secs(30) {
+            self.last_scrape_write = Instant::now();
+            self.scrape.save_if_dirty();
+        }
+    }
+
+    /// Poster texture, loaded on first use; keeps the last few around.
+    pub(crate) fn poster(&mut self, ctx: &egui::Context, path: &Path) -> Option<egui::TextureHandle> {
+        if let Some(i) = self.posters.iter().position(|(p, _)| p == path) {
+            let e = self.posters.remove(i);
+            let tex = e.1.clone();
+            self.posters.push(e);
+            return Some(tex);
+        }
+        let img = crate::scrape::load_thumb(path)?;
+        let tex = ctx.load_texture(path.to_string_lossy(), img, egui::TextureOptions::LINEAR);
+        self.posters.push((path.to_path_buf(), tex.clone()));
+        if self.posters.len() > 8 {
+            drop(self.posters.remove(0));
+        }
+        Some(tex)
+    }
+
+    /// Settings → Library → Refresh posters and info.
+    pub(crate) fn refresh_metadata(&mut self) {
+        self.scrape.clear();
+        self.scrape.save_if_dirty();
+        self.scraper.forget();
+        self.posters.clear();
+        self.toast("Posters and info will be looked up again");
+    }
+
     fn remember_focus(&mut self) {
         if let (Source::Dir(d), Some(item)) = (&self.source, self.items.get(self.focus)) {
             self.remembered.retain(|(rd, _)| rd != d);
@@ -924,6 +1067,9 @@ impl App {
         player.load(path, start);
         player.set_loop_file(self.cfg.repeat == crate::config::Repeat::One);
         self.playing_path = Some(path.to_path_buf());
+        if let Some(q) = self.query_for_path(path).filter(|_| self.in_library(path)) {
+            self.want_scrape(q);
+        }
         let e = self.hist.entry(path);
         e.last_played = crate::config::now_unix();
         if from_start {
@@ -1635,9 +1781,13 @@ impl App {
         self.toast(format!("Repeat: {}", r.label()));
     }
 
-    /// Episode title: from the file name for now (online metadata fills in more later).
-    pub(crate) fn episode_title(&self, _path: &Path, e: &crate::media::Episode) -> Option<String> {
-        e.title.clone()
+    /// Episode title: from metadata if known, else from the file name.
+    pub(crate) fn episode_title(&self, path: &Path, e: &crate::media::Episode) -> Option<String> {
+        self.info_for_path(path)
+            .and_then(|i| i.episodes.get(&crate::scrape::ep_key(e.season, e.episode)))
+            .map(|ep| ep.title.clone())
+            .filter(|t| !t.is_empty())
+            .or_else(|| e.title.clone())
     }
 
     /// The name shown in a browser row.
@@ -1909,6 +2059,8 @@ impl eframe::App for App {
 
         self.take_probe_results();
         self.schedule_probe(&ctx);
+        self.take_scrape_results();
+        self.schedule_scrape(&ctx);
 
         let mut actions = self.collect_input(&ctx);
         actions.extend(self.run_steps(&ctx));
@@ -1977,6 +2129,7 @@ impl eframe::App for App {
         self.record_position();
         self.hist.save_if_dirty();
         self.meta_cache.save_if_dirty();
+        self.scrape.save_if_dirty();
         self.sys.inhibit(false);
         if let Some(p) = self.player.as_mut() {
             p.shutdown();

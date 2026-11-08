@@ -89,6 +89,27 @@ B (○) or ≡ finishes. Results filter live while you type. Settings live in
 `~/.config/jimmy/` (`config.toml`, `bindings.toml`), history in `~/.local/share/jimmy/state.toml`.
 The clock is 12-hour by default; switch to 24-hour in Settings → General.
 
+## TV shows, movies and playlists
+
+- **TV shows** groups episodes by show and season from their names: `Show S01E02 Title.mkv`,
+  `Show - 1x02.mkv`, or `Show/Season 1/03 - Title.mkv`. A show's page has season tabs (LT/RT,
+  `[` `]`, or left/right), marks what's watched and what's next; X on a show plays its next
+  episode. Everything else is under **Movies**.
+- Playing an episode queues the rest of the show. When one ends an **Up next** card counts
+  down (A plays now, B cancels). The player's **Episodes** tab (E, LS, or from Tracks) jumps
+  to any episode; Shift+. / Shift+, (right stick) go to the next / previous one.
+- **Repeat** (R in the player): off, this video, or the whole queue. **When a video ends**:
+  go back to the list, or stay on the last frame with Replay / Back. Both are in Settings →
+  Playback and the Episodes tab.
+- **Playlists** are `.m3u8` files. P (right-stick click) adds the selected video, a whole show,
+  or a playlist to a new or existing playlist. Any `.m3u`/`.m3u8` in your folders works too.
+- **Posters and info**: `tvshow.nfo`, `movie.nfo` / `<name>.nfo` and `poster.jpg` /
+  `folder.jpg` / `<name>-poster.jpg` next to your files are used first, offline. Online,
+  shows come from TVmaze (no account needed); movies need a free TMDB key in `config.toml`:
+  `tmdb_api_key = "…"`. Only what you look at is looked up, via the system `curl`. Turn it
+  off or refresh it in Settings → Library.
+- Settings → Library → **Clear watch history** forgets positions and watched marks.
+
 ## Command line
 
 ```

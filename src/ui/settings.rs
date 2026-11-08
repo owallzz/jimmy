@@ -44,6 +44,7 @@ pub(crate) enum Row {
     Bind(Context, Action),
     ResetBindings,
     ClearHistory,
+    RefreshMeta,
     Info(String, String),
 }
 
@@ -154,6 +155,7 @@ impl App {
                     "set: movies and shows".to_string()
                 };
                 v.push(Row::Info("TMDB key".into(), tmdb));
+                v.push(Row::RefreshMeta);
                 v.push(Row::ClearHistory);
                 v
             }
@@ -257,6 +259,7 @@ impl App {
                         }
                         _ => self.settings_kb = !self.settings_kb,
                     },
+                    Some(Row::RefreshMeta) if a == Action::Accept => self.refresh_metadata(),
                     Some(Row::ClearHistory) if a == Action::Accept => {
                         if self.confirm_clear.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(4)) {
                             self.confirm_clear = None;
@@ -440,6 +443,9 @@ impl App {
                             text(&p, pos2(sx, cy), Align2::LEFT_CENTER, "—", 13.0, if focused { pal.ink } else { pal.faint });
                         }
                     }
+                }
+                Row::RefreshMeta => {
+                    text(&p, pos2(lx, cy), Align2::LEFT_CENTER, "Refresh posters and info", 16.0, if focused { pal.ink } else { pal.accent });
                 }
                 Row::ClearHistory => {
                     let armed = self.confirm_clear.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(4));

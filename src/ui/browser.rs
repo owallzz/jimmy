@@ -305,7 +305,11 @@ impl App {
             if seasons.len() > 1 {
                 list.push((Action::NextTab, "Season"));
             }
-            list.extend([(Action::Filter, "Search"), (Action::Palette, "Commands"), (Action::Menu, "Menu")]);
+            list.push((Action::Filter, "Search"));
+            if list.len() < 6 {
+                list.push((Action::Palette, "Commands"));
+            }
+            list.push((Action::Menu, "Menu"));
             out.extend(self.hints(ui, pos2(rect.left() + PAD, hint_y), Context::Browser, &list, 13.0, 22.0, pal.dim, pal.raise));
         }
 
@@ -325,12 +329,69 @@ impl App {
         let inner = r.width() - PAD * 2.0;
         let mut y = r.top() + 18.0;
 
-        let title = if item.entry.is_dir {
+        let info = self.info_for(&item).cloned();
+        let ep_info = item.ep.as_ref().and_then(|e| info.as_ref()?.episodes.get(&crate::scrape::ep_key(e.season, e.episode)).cloned());
+        let title = if item.show.is_some() {
+            info.as_ref().map(|i| i.title.clone()).filter(|t| !t.is_empty()).unwrap_or_else(|| item.entry.name.clone())
+        } else if item.entry.is_dir {
             format!("{}/", item.entry.name)
+        } else if let Some(e) = &item.ep {
+            let t = self.episode_title(&item.entry.path, e).map(|t| format!(" · {t}")).unwrap_or_default();
+            format!("{}{t}", e.code())
+        } else if let Some(i) = info.as_ref().filter(|i| !i.title.is_empty()) {
+            i.title.clone()
         } else {
             std::path::Path::new(&item.entry.name).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
         };
-        y += text_wrap(&p, pos2(x, y), inner, &title, 21.0, pal.text, 3) + 14.0;
+
+        // ---- poster beside title / year / rating / genres
+        let poster = info.as_ref().and_then(|i| i.poster.clone()).and_then(|pp| self.poster(ui.ctx(), &pp));
+        if let Some(tex) = poster {
+            let [tw, th] = tex.size();
+            let ph = (r.height() * 0.32).min(260.0);
+            let pw = (ph * tw as f32 / th.max(1) as f32).min(inner * 0.45);
+            let ph = pw * th as f32 / tw.max(1) as f32;
+            let pr = Rect::from_min_size(pos2(x, y), vec2(pw, ph));
+            p.image(tex.id(), pr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), egui::Color32::WHITE);
+            let tx = pr.right() + 16.0;
+            let tw_ = r.right() - PAD - tx;
+            let mut ty = y;
+            if let Some(e) = &item.ep {
+                ty += text_wrap(&p, pos2(tx, ty), tw_, &e.show, 13.0, pal.dim, 2) + 4.0;
+            }
+            ty += text_wrap(&p, pos2(tx, ty), tw_, &title, 19.0, pal.text, 4) + 8.0;
+            if let Some(i) = &info {
+                let mut bits = Vec::new();
+                if let Some(yr) = i.year {
+                    bits.push(yr.to_string());
+                }
+                if let Some(rt) = i.rating {
+                    bits.push(format!("{rt:.1}/10"));
+                }
+                if let Some(a) = ep_info.as_ref().map(|e| e.aired.clone()).filter(|a| !a.is_empty()) {
+                    bits.push(format!("aired {a}"));
+                }
+                if !bits.is_empty() {
+                    ty += text_wrap(&p, pos2(tx, ty), tw_, &bits.join(" · "), 13.0, pal.accent, 2) + 4.0;
+                }
+                if !i.genres.is_empty() {
+                    ty += text_wrap(&p, pos2(tx, ty), tw_, &i.genres.join(", "), 13.0, pal.dim, 3) + 4.0;
+                }
+            }
+            let _ = ty;
+            y = pr.bottom() + 14.0;
+        } else {
+            if let Some(e) = &item.ep {
+                y += text_wrap(&p, pos2(x, y), inner, &e.show, 14.0, pal.dim, 2) + 4.0;
+            }
+            y += text_wrap(&p, pos2(x, y), inner, &title, 21.0, pal.text, 3) + 14.0;
+        }
+        // Description: the episode's own if known, else the show's or movie's.
+        let overview = ep_info.as_ref().map(|e| e.overview.clone()).filter(|o| !o.is_empty()).or_else(|| info.as_ref().map(|i| i.overview.clone()).filter(|o| !o.is_empty()));
+        if let Some(o) = overview {
+            let lines = if item.show.is_some() { 8 } else { 5 };
+            y += text_wrap(&p, pos2(x, y), inner, &o, 14.0, pal.dim, lines) + 14.0;
+        }
 
         let key_w = if inner < 380.0 { 96.0 } else { 112.0 };
         // Value segments flow onto a second line if they don't fit (keeps "ends 21:45" visible).
@@ -360,7 +421,18 @@ impl App {
             y += 24.0;
         };
 
-        if item.entry.is_dir {
+        if let Some(show) = item.show.as_ref().and_then(|k| self.catalog.show(k)).cloned() {
+            let ns = show.seasons().len();
+            kv("Seasons", &[(ns.to_string(), pal.text)]);
+            let watched = show.episodes.iter().filter(|(_, f)| self.hist.get(&f.path).is_some_and(|h| h.watched)).count();
+            kv("Episodes", &[(format!("{} · {watched} watched", show.episodes.len()), pal.text)]);
+            let next = &show.episodes[self.next_up(&show)];
+            let nt = self.episode_title(&next.1.path, &next.0).map(|t| format!(" · {t}")).unwrap_or_default();
+            kv("Next", &[(format!("{}{nt}", next.0.code()), pal.accent)]);
+            if let Some(src) = info.as_ref().map(|i| i.source.clone()).filter(|s| !s.is_empty()) {
+                kv("Info from", &[(src, pal.faint)]);
+            }
+        } else if item.entry.is_dir {
             kv("Path", &[(item.entry.path.display().to_string(), pal.dim)]);
             if self.cfg.roots.contains(&item.entry.path) {
                 kv("Library", &[("yes, part of My media".into(), pal.ok)]);
@@ -374,7 +446,8 @@ impl App {
                 && in_library
                 && !self.probe_failed.contains(&item.entry.path);
             kv("File", &[(item.entry.name.clone(), pal.dim)]);
-            if !matches!(self.source, Source::Dir(_)) {
+            // The folder is noise once a poster and description are showing.
+            if !matches!(self.source, Source::Dir(_)) && info.is_none() {
                 if let Some(parent) = item.entry.path.parent() {
                     kv("Folder", &[(parent.display().to_string(), pal.dim)]);
                 }
@@ -425,7 +498,14 @@ impl App {
 
         // ---- action buttons at the bottom of the panel
         let resumable = item.hist.as_ref().is_some_and(|h| h.resumable());
-        let buttons: Vec<(String, Action, bool)> = if item.entry.is_dir {
+        let buttons: Vec<(String, Action, bool)> = if let Some(show) = item.show.as_ref().and_then(|k| self.catalog.show(k)) {
+            let next = &show.episodes[self.next_up(show)];
+            let resume = self.hist.get(&next.1.path).is_some_and(|h| h.resumable());
+            vec![
+                (format!("{} {}", if resume { "▶ Resume" } else { "▶ Play" }, next.0.code()), Action::Options, true),
+                ("Episodes".into(), Action::Accept, false),
+            ]
+        } else if item.entry.is_dir {
             let in_lib = self.cfg.roots.contains(&item.entry.path);
             vec![
                 ("Open folder".into(), Action::Accept, true),
@@ -439,6 +519,8 @@ impl App {
         };
         let bh = 40.0;
         let mut by = r.bottom() - PAD - bh * buttons.len() as f32 - 6.0 * (buttons.len() as f32 - 1.0);
+        // Long details stop above the buttons instead of running underneath them.
+        p.rect_filled(Rect::from_min_max(pos2(r.left(), by - 14.0), r.right_bottom()), 0.0, pal.panel);
         for (label, action, primary) in buttons {
             let br = Rect::from_min_size(pos2(x, by), vec2(inner, bh));
             let resp = ui.interact(br, ui.scope_id().with(("btn", label.as_str())), Sense::CLICK);
