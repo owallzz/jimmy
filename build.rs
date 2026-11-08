@@ -26,4 +26,8 @@ fn main() {
             println!("cargo:rustc-link-arg={tok}");
         }
     }
+    // libplacebo has a little C++ (float formatting) and its .pc doesn't list the C++ runtime.
+    if Path::new(&format!("{lib}/libplacebo.a")).exists() {
+        println!("cargo:rustc-link-lib=dylib=stdc++");
+    }
 }
