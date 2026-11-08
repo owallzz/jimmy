@@ -23,6 +23,17 @@ sudo dnf install mpv-libs mpv-devel gcc systemd-devel
 sudo dnf swap mesa-va-drivers mesa-va-drivers-freeworld
 ```
 
+### Install the RPM
+
+```bash
+sudo dnf install ./jimmy-0.1.0-1.fc44.x86_64.rpm
+```
+
+This puts `jimmy` in `/usr/bin` and adds it to the app menu. To build the RPM yourself, see
+[packaging/README.md](packaging/README.md).
+
+### Or build from source
+
 Build and add to the app menu:
 
 ```bash

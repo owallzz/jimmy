@@ -1,0 +1,8 @@
+# Fedora build environment for jimmy RPMs. Works for x86_64 on Apple Silicon via
+# `--platform linux/amd64` (Rosetta/QEMU). See packaging/README.md.
+ARG FEDORA=44
+FROM registry.fedoraproject.org/fedora:${FEDORA}
+RUN dnf install -y https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm \
+ && dnf install -y --setopt=install_weak_deps=False cargo rust gcc mpv-devel systemd-devel rpm-build \
+ && dnf clean all
+WORKDIR /src
