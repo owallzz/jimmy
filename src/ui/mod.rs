@@ -1828,7 +1828,17 @@ impl App {
                 None => format!("{} · {}", e.show, e.code()),
             };
         }
-        path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+        if let Some(i) = self.info_for_path(path).filter(|i| !i.title.is_empty()) {
+            return match i.year {
+                Some(y) => format!("{} ({y})", i.title),
+                None => i.title.clone(),
+            };
+        }
+        match path.file_name().map(|n| crate::media::movie_title(&n.to_string_lossy())) {
+            Some((t, Some(y))) if !t.is_empty() => format!("{t} ({y})"),
+            Some((t, None)) if !t.is_empty() => t,
+            _ => path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+        }
     }
 
     /// Settings → Library → Clear watch history.
