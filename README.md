@@ -77,8 +77,9 @@ System volume works through `osascript`; there is no backlight control on macOS.
 | Stop | Backspace | q | B (○) twice |
 | Fullscreen | F11, F (player) | | View |
 
-jimmy opens on **My media** (everything in your library folders). Backing out of My media opens the
-menu instead of leaving it. To add folders, open the menu → **Browse computer…**, move to a folder and
+jimmy opens on **My media** (everything in your library folders). Back goes up one folder; at the top of
+a tab (My media, Continue watching, a library folder…) it opens the menu instead, so you only switch
+tabs from the menu. To add folders, open the menu → **Browse computer…**, move to a folder and
 press X (□) (Shift+Enter on a keyboard); press it again to remove it. Library folders are tagged
 `LIBRARY`.
 

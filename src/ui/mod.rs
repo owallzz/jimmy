@@ -550,22 +550,19 @@ impl App {
             self.apply_filter();
             return;
         }
-        // "My media" is home: backing out of it opens the menu instead of leaving.
-        match &self.source {
-            Source::All => {
+        // Back never switches tabs (only the menu does): inside a folder it goes up one level, and
+        // at a tab's top level (My media, Continue watching, Recent, a library's root, or the
+        // filesystem root when browsing) it opens the menu.
+        let parent = match &self.source {
+            Source::Dir(d) if self.exploring || !self.cfg.roots.contains(d) => d.parent().map(|p| (p.to_path_buf(), d.clone())),
+            _ => None,
+        };
+        match parent {
+            Some((parent, child)) => self.open_dir(parent, Some(child)),
+            None => {
                 self.overlay = Overlay::Menu;
                 self.menu_focus = self.menu_current();
             }
-            // Backing out of a library folder's top level goes home rather than above the library.
-            Source::Dir(d) if self.cfg.roots.contains(d) && !self.exploring => self.open_source(Source::All),
-            Source::Dir(d) => match d.parent() {
-                Some(parent) => {
-                    let child = d.clone();
-                    self.open_dir(parent.to_path_buf(), Some(child));
-                }
-                None => self.open_source(Source::All),
-            },
-            Source::Continue | Source::Recent => self.open_source(Source::All),
         }
     }
 
