@@ -168,7 +168,9 @@ impl App {
         p.rect_filled(track, 0.0, white(0.2));
         if s.duration > 0.0 {
             let frac = (s.time_pos / s.duration).clamp(0.0, 1.0) as f32;
-            let cache = ((s.time_pos + s.cache_secs) / s.duration).clamp(0.0, 1.0) as f32;
+            // Absolute end of the buffer, not time_pos + buffered seconds: the two update at
+            // different rates, so their sum jitters back and forth during playback.
+            let cache = (s.cache_end.max(s.time_pos) / s.duration).clamp(0.0, 1.0) as f32;
             p.rect_filled(Rect::from_min_size(track.min, vec2(track.width() * cache, 4.0)), 0.0, white(0.4));
             p.rect_filled(Rect::from_min_size(track.min, vec2(track.width() * frac, 4.0)), 0.0, with_alpha(self.pal.accent, 0.85));
             let tx = track.left() + track.width() * frac;
