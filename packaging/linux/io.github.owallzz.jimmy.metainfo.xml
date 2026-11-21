@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata for the Flatpak and the AppImage. The release workflow sets the
+     <release> version and date (make-flatpak.sh / make-appimage.sh do it from Cargo.toml). -->
+<component type="desktop-application">
+  <id>io.github.owallzz.jimmy</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT AND GPL-2.0-or-later AND LGPL-2.1-or-later AND BSD-2-Clause AND ISC</project_license>
+  <name>jimmy</name>
+  <summary>Lightweight, gamepad-friendly media player</summary>
+  <developer id="io.github.owallzz">
+    <name>jimmy developers</name>
+  </developer>
+  <description>
+    <p>
+      jimmy is a fast, utilitarian media player and library for old hardware, built on libmpv.
+    </p>
+    <ul>
+      <li>Plays anything FFmpeg and mpv can play, with hardware decoding where available</li>
+      <li>Movie and TV libraries with posters, descriptions and episode tracking</li>
+      <li>Media browser built for slow disks</li>
+      <li>Full gamepad control, keyboard with vim keys, and mouse</li>
+      <li>Command palette, remappable keyboard and gamepad controls</li>
+      <li>Subtitles and closed captions, resume positions</li>
+      <li>20 color schemes</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.owallzz.jimmy.desktop</launchable>
+  <url type="homepage">https://github.com/owallzz/jimmy</url>
+  <url type="bugtracker">https://github.com/owallzz/jimmy/issues</url>
+  <url type="vcs-browser">https://github.com/owallzz/jimmy</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Movies library in grid view</caption>
+      <image>https://raw.githubusercontent.com/owallzz/jimmy/main/docs/images/library-grid.jpg</image>
+    </screenshot>
+    <screenshot>
+      <caption>Movies library in list view</caption>
+      <image>https://raw.githubusercontent.com/owallzz/jimmy/main/docs/images/library-list.png</image>
+    </screenshot>
+  </screenshots>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Video</category>
+    <category>Player</category>
+  </categories>
+  <keywords>
+    <keyword>video</keyword>
+    <keyword>movie</keyword>
+    <keyword>player</keyword>
+    <keyword>mpv</keyword>
+    <keyword>gamepad</keyword>
+  </keywords>
+  <provides>
+    <binary>jimmy</binary>
+  </provides>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+    <control>gamepad</control>
+  </supports>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-11-21"/>
+  </releases>
+</component>

@@ -1,0 +1,53 @@
+# Flatpak of the prebuilt portable binary (no compiling here). make-flatpak.sh copies this file,
+# the binary and the assets into one folder and runs flatpak-builder on it.
+# libva, libpulse, freetype, fontconfig… come from the runtime; mpv, FFmpeg, libass and
+# libdisplay-info are built into the binary.
+id: io.github.owallzz.jimmy
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+command: jimmy
+rename-desktop-file: jimmy.desktop
+rename-icon: jimmy
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  # GPU (hardware decoding) and gamepads
+  - --device=all
+  - --socket=pulseaudio
+  # posters, descriptions and subtitle downloads
+  - --share=network
+  # media to play; config, history and caches live in ~/.var/app
+  - --filesystem=home:ro
+  - --filesystem=/run/media:ro
+  - --filesystem=/media:ro
+  - --filesystem=/mnt:ro
+  # keep the screen awake while playing
+  - --talk-name=org.freedesktop.ScreenSaver
+modules:
+  - name: jimmy
+    buildsystem: simple
+    build-options:
+      strip: false
+      no-debuginfo: true
+    sources:
+      - type: file
+        path: jimmy
+      - type: file
+        path: jimmy.desktop
+      - type: file
+        path: jimmy.svg
+      - type: file
+        path: io.github.owallzz.jimmy.metainfo.xml
+      - type: file
+        path: LICENSE
+      - type: file
+        path: THIRD-PARTY.md
+    build-commands:
+      - install -Dm755 jimmy /app/bin/jimmy
+      - install -Dm644 jimmy.desktop /app/share/applications/jimmy.desktop
+      - install -Dm644 jimmy.svg /app/share/icons/hicolor/scalable/apps/jimmy.svg
+      - install -Dm644 io.github.owallzz.jimmy.metainfo.xml /app/share/metainfo/io.github.owallzz.jimmy.metainfo.xml
+      - install -Dm644 LICENSE /app/share/licenses/io.github.owallzz.jimmy/LICENSE
+      - install -Dm644 THIRD-PARTY.md /app/share/licenses/io.github.owallzz.jimmy/THIRD-PARTY.md

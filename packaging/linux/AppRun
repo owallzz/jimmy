@@ -1,0 +1,4 @@
+#!/bin/sh
+# AppImage entry point. No bundled libraries: the binary only needs common system ones.
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/bin/jimmy" "$@"
