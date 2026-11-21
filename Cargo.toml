@@ -2,6 +2,13 @@
 name = "jimmy"
 version = "0.1.0"
 edition = "2024"
+description = "Lightweight, gamepad-friendly media player for old hardware (Rust, egui, libmpv)"
+license = "MIT"
+repository = "https://github.com/owallzz/jimmy"
+readme = "README.md"
+keywords = ["media-player", "mpv", "gamepad", "egui", "linux"]
+categories = ["multimedia::video"]
+publish = false
 
 [dependencies]
 anyhow = "1.0.104"

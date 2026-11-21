@@ -5,7 +5,12 @@ Name:           jimmy
 Version:        %{jimmy_version}
 Release:        %{jimmy_release}%{?dist}
 Summary:        Lightweight, gamepad-friendly media player
-License:        LicenseRef-Proprietary
+%if 0%{?jimmy_system_mpv}
+License:        MIT
+%else
+# Static builds include mpv (GPL-2.0-or-later as built), FFmpeg and libplacebo (LGPL) and dav1d.
+License:        MIT AND GPL-2.0-or-later AND LGPL-2.1-or-later AND BSD-2-Clause
+%endif
 URL:            https://github.com/owallzz/jimmy
 
 %if 0%{?jimmy_system_mpv}
@@ -33,12 +38,14 @@ install -Dm755 %{jimmy_bin} %{buildroot}%{_bindir}/jimmy
 install -Dm644 %{jimmy_src}/assets/jimmy.desktop %{buildroot}%{_datadir}/applications/jimmy.desktop
 install -Dm644 %{jimmy_src}/assets/jimmy.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/jimmy.svg
 install -Dm644 %{jimmy_src}/README.md %{buildroot}%{_docdir}/jimmy/README.md
+install -Dm644 %{jimmy_src}/LICENSE %{buildroot}%{_licensedir}/jimmy/LICENSE
 
 %files
 %{_bindir}/jimmy
 %{_datadir}/applications/jimmy.desktop
 %{_datadir}/icons/hicolor/scalable/apps/jimmy.svg
 %doc %{_docdir}/jimmy/README.md
+%license %{_licensedir}/jimmy/LICENSE
 
 %changelog
 * Sat Nov 07 2026 jimmy developers - %{jimmy_version}-%{jimmy_release}

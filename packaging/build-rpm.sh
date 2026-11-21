@@ -41,7 +41,7 @@ cp "$TOPDIR"/RPMS/*/jimmy-"$VERSION-$RELEASE".*.rpm "$OUT"/
 echo "==> tarball"
 NAME="jimmy-$VERSION-$VARIANT-linux-$ARCH"
 mkdir -p "$TOPDIR/$NAME"
-cp "$BIN" "$SRC/README.md" "$TOPDIR/$NAME/"
+cp "$BIN" "$SRC/README.md" "$SRC/LICENSE" "$TOPDIR/$NAME/"
 cp "$SRC/assets/jimmy.desktop" "$SRC/assets/jimmy.svg" "$TOPDIR/$NAME/"
 tar -C "$TOPDIR" -czf "$OUT/$NAME.tar.gz" "$NAME"
 
