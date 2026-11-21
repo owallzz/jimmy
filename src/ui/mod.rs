@@ -326,16 +326,15 @@ impl App {
         setup_fonts(&ctx);
 
         let no_mpv = std::env::var_os("JIMMY_BENCH_NOMPV").is_some(); // benchmark switch
+        let mut player_error = None;
         let player = match if no_mpv { Err(anyhow::anyhow!("disabled")) } else { Player::new(ctx.clone(), &cfg) } {
             Ok(p) => Some(p),
             Err(e) => {
                 log::error!("{e}");
+                player_error = Some(format!("libmpv could not start: {e}"));
                 None
             }
         };
-        let player_error = player.is_none().then(|| {
-            "libmpv could not start. On Fedora: sudo dnf install mpv-libs (from RPM Fusion)".to_string()
-        });
 
         let display = display_handle(cc);
         let mut app = Self {
@@ -1190,7 +1189,7 @@ impl App {
             return;
         }
         let parent = match &self.source {
-            Source::Dir(d) if self.exploring || !self.cfg.roots.contains(d) => d.parent().map(|p| (p.to_path_buf(), d.clone())),
+            Source::Dir(d) if self.exploring || !self.cfg.roots.contains(d) => d.parent().map(|p| (p.to_path_buf(), d.clone())).or_else(|| drives_above(d)),
             _ => None,
         };
         match parent {
@@ -2252,6 +2251,17 @@ impl App {
         }
         out
     }
+}
+
+/// Windows: going up from a drive root (`C:\`) shows the list of drives (an empty path).
+#[cfg(windows)]
+fn drives_above(d: &Path) -> Option<(PathBuf, PathBuf)> {
+    (!d.as_os_str().is_empty()).then(|| (PathBuf::new(), d.to_path_buf()))
+}
+
+#[cfg(not(windows))]
+fn drives_above(_: &Path) -> Option<(PathBuf, PathBuf)> {
+    None
 }
 
 fn is_direction(p: PadInput) -> bool {

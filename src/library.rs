@@ -1,8 +1,8 @@
 //! Folder listing on a background thread.
 //!
 //! Built for slow disks: one `read_dir` per folder, no file probing (durations only come from
-//! playback history), and the thread runs at idle I/O priority on Linux so it never competes
-//! with playback.
+//! playback history), and the thread runs at low I/O priority so it never competes with
+//! playback.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -55,6 +55,10 @@ pub struct Listing {
 }
 
 pub fn list_dir(dir: &Path) -> Listing {
+    #[cfg(windows)]
+    if dir.as_os_str().is_empty() {
+        return list_drives();
+    }
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
         Err(e) => return Listing { all: false, dir: dir.into(), entries: vec![], error: Some(e.to_string()) },
@@ -73,6 +77,11 @@ pub fn list_dir(dir: &Path) -> Listing {
             Ok(m) => m,
             Err(_) => continue,
         };
+        // Hidden and system files ($RECYCLE.BIN, System Volume Information, pagefile.sys…).
+        #[cfg(windows)]
+        if std::os::windows::fs::MetadataExt::file_attributes(&meta) & 0x6 != 0 {
+            continue;
+        }
         if meta.is_dir() {
             dirs.push(Entry {
                 name,
@@ -115,6 +124,20 @@ pub fn list_dir(dir: &Path) -> Listing {
     media.sort_by_key(key);
     dirs.extend(media);
     Listing { all: false, dir: dir.into(), entries: dirs, error: None }
+}
+
+/// Windows: the drive letters, shown as the folder above `C:\` (an empty path).
+#[cfg(windows)]
+fn list_drives() -> Listing {
+    let mask = unsafe { windows_sys::Win32::Storage::FileSystem::GetLogicalDrives() };
+    let entries = (0..26u8)
+        .filter(|i| mask & (1 << i) != 0)
+        .map(|i| {
+            let name = format!("{}:", (b'A' + i) as char);
+            Entry { path: PathBuf::from(format!("{name}\\")), name, is_dir: true, size: 0, modified: None, subs: vec![] }
+        })
+        .collect();
+    Listing { all: false, dir: PathBuf::new(), entries, error: None }
 }
 
 /// Every media file under the given folders (for "My media"). One `read_dir` per folder,
@@ -188,7 +211,27 @@ pub fn lower_io_priority() {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+pub fn lower_io_priority() {
+    // setiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_THREAD, IOPOL_THROTTLE)
+    unsafe extern "C" {
+        fn setiopolicy_np(iotype: libc::c_int, scope: libc::c_int, policy: libc::c_int) -> libc::c_int;
+    }
+    unsafe {
+        setiopolicy_np(0, 1, 3);
+    }
+}
+
+#[cfg(windows)]
+pub fn lower_io_priority() {
+    // Background mode lowers this thread's CPU, disk and memory priority.
+    use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN};
+    unsafe {
+        SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn lower_io_priority() {}
 
 #[derive(Clone, Debug)]

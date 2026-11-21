@@ -1,5 +1,8 @@
 //! jimmy: a lightweight, gamepad-friendly media player.
 
+// No console window next to the player on Windows (debug builds keep it for logs).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod action;
 mod config;
 mod input;
@@ -10,6 +13,7 @@ mod media;
 mod mem;
 mod mpv_render;
 mod meta;
+mod os;
 mod player;
 mod scrape;
 mod subs;
@@ -77,7 +81,21 @@ fn parse_steps(list: &str) -> Result<Vec<Step>, String> {
         .collect()
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            // GUI-subsystem builds on Windows start without a console: attach to the terminal
+            // jimmy was started from (if any) so the error is visible there.
+            os::attach_parent_console();
+            eprintln!("Error: {e:#}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> anyhow::Result<()> {
+    os::attach_console();
     mem::init();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
@@ -111,12 +129,12 @@ fn main() -> anyhow::Result<()> {
             "--actions" => {
                 steps = parse_steps(&args.next().unwrap_or_default()).map_err(|e| anyhow::anyhow!(e))?;
             }
+            // Old macOS passes a process serial number when launched from Finder.
+            other if other.starts_with("-psn_") => {}
             other if other.starts_with('-') => anyhow::bail!("unknown option {other}\n\n{HELP}"),
             path => {
                 // Accept file:// URIs from desktop launchers.
-                let path = path.strip_prefix("file://").unwrap_or(path);
-                let p = PathBuf::from(path);
-                open = Some(p.canonicalize().unwrap_or(p));
+                open = Some(os::absolute(PathBuf::from(os::from_file_uri(path))));
             }
         }
     }
@@ -129,11 +147,16 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    let viewport = egui::ViewportBuilder::default()
+    // Inside Flatpak the Wayland app_id must match the Flatpak ID, so the desktop finds our icon.
+    let app_id = std::env::var("FLATPAK_ID").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "jimmy".into());
+    let mut viewport = egui::ViewportBuilder::default()
         .with_title("jimmy")
-        .with_app_id("jimmy")
+        .with_app_id(app_id)
         .with_inner_size(size)
         .with_min_inner_size([640.0, 400.0]);
+    if let Some(icon) = window_icon() {
+        viewport = viewport.with_icon(std::sync::Arc::new(icon));
+    }
     let options = eframe::NativeOptions {
         viewport,
         renderer: eframe::Renderer::Glow,
@@ -147,4 +170,15 @@ fn main() -> anyhow::Result<()> {
         Box::new(move |cc| Ok(Box::new(ui::App::new(cc, Startup { open, steps, fullscreen: start_fullscreen })))),
     )
     .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// Window/taskbar icon (the exe icon on Windows comes from assets/jimmy.rc).
+fn window_icon() -> Option<egui::IconData> {
+    let mut dec = png::Decoder::new(std::io::Cursor::new(&include_bytes!("../assets/jimmy-256.png")[..]));
+    dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = dec.read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    buf.truncate(info.buffer_size());
+    (info.color_type == png::ColorType::Rgba).then_some(egui::IconData { rgba: buf, width: info.width, height: info.height })
 }

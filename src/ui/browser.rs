@@ -28,9 +28,11 @@ impl App {
         let (parent, current) = match &self.source {
             Source::Dir(d) => {
                 let cur = d.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| d.display().to_string());
+                // The empty path is the list of drives on Windows.
+                let cur = if d.as_os_str().is_empty() { "This PC".into() } else { cur };
                 let par = d.parent().map(|p| {
                     let s = p.display().to_string();
-                    if s.ends_with('/') { s } else { s + "/" }
+                    if s.ends_with(std::path::MAIN_SEPARATOR) { s } else { s + std::path::MAIN_SEPARATOR_STR }
                 });
                 (par.unwrap_or_default(), cur)
             }

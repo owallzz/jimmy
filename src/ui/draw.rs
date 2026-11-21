@@ -158,18 +158,25 @@ pub fn fmt_size(bytes: u64) -> String {
     }
 }
 
-/// Local wall-clock hour and minute for a unix timestamp.
-#[cfg(unix)]
-pub fn local_hm(unix: i64) -> (u32, u32) {
-    let t: libc::time_t = unix as libc::time_t;
+/// Broken-down local time for a unix timestamp.
+fn local_tm(unix: i64) -> libc::tm {
+    let t = unix as libc::time_t;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    unsafe { libc::localtime_r(&t, &mut tm) };
-    (tm.tm_hour as u32, tm.tm_min as u32)
+    #[cfg(unix)]
+    unsafe {
+        libc::localtime_r(&t, &mut tm)
+    };
+    #[cfg(windows)]
+    unsafe {
+        libc::localtime_s(&mut tm, &t)
+    };
+    tm
 }
 
-#[cfg(not(unix))]
+/// Local wall-clock hour and minute for a unix timestamp.
 pub fn local_hm(unix: i64) -> (u32, u32) {
-    (((unix / 3600) % 24) as u32, ((unix / 60) % 60) as u32)
+    let tm = local_tm(unix);
+    (tm.tm_hour as u32, tm.tm_min as u32)
 }
 
 static CLOCK_24H: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -203,18 +210,10 @@ pub fn now_unix() -> i64 {
 }
 
 /// Local date for a file's modification time, `YYYY-MM-DD`.
-#[cfg(unix)]
 pub fn local_date(t: std::time::SystemTime) -> String {
     let secs = t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-    let tt: libc::time_t = secs as libc::time_t;
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    unsafe { libc::localtime_r(&tt, &mut tm) };
+    let tm = local_tm(secs);
     format!("{:04}-{:02}-{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday)
-}
-
-#[cfg(not(unix))]
-pub fn local_date(_: std::time::SystemTime) -> String {
-    String::new()
 }
 
 #[cfg(test)]

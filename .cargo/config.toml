@@ -1,5 +1,4 @@
-# Homebrew's libmpv lives here on Apple Silicon Macs (development only).
-[target.aarch64-apple-darwin]
-rustflags = ["-L", "/opt/homebrew/lib"]
-[target.x86_64-apple-darwin]
-rustflags = ["-L", "/usr/local/lib"]
+# Intentionally (almost) empty. Homebrew's lib folder for macOS development builds is added
+# by build.rs, and only when JIMMY_MPV_PREFIX is unset, so release builds (static mpv) never
+# search Homebrew. CI sets RUSTFLAGS / CARGO_TARGET_<TRIPLE>_RUSTFLAGS itself; don't add
+# target rustflags here, they would be silently replaced there and differ from local builds.

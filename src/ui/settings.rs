@@ -48,7 +48,12 @@ pub(crate) enum Row {
     Info(String, String),
 }
 
-const HWDEC: &[&str] = &["auto-safe", "auto-copy-safe", "vaapi", "vaapi-copy", "videotoolbox", "no"];
+#[cfg(windows)]
+const HWDEC: &[&str] = &[crate::config::DEFAULT_HWDEC, "auto-safe", "auto-copy-safe", "d3d11va-copy", "dxva2-copy", "dxva2", "no"];
+#[cfg(target_os = "macos")]
+const HWDEC: &[&str] = &["auto-safe", "auto-copy-safe", "videotoolbox", "no"];
+#[cfg(not(any(windows, target_os = "macos")))]
+const HWDEC: &[&str] = &["auto-safe", "auto-copy-safe", "vaapi", "vaapi-copy", "no"];
 
 fn step<T: PartialEq + Copy>(list: &[T], cur: T, dir: i32) -> T {
     let i = list.iter().position(|v| *v == cur).unwrap_or(0) as i32;
@@ -249,12 +254,14 @@ impl App {
                         self.open_source(Source::Library(p));
                     }
                     Some(Row::AddRoot) if a == Action::Accept => {
-                        if let Source::Dir(d) = self.source.clone() {
-                            if !self.cfg.roots.contains(&d) {
-                                self.toggle_library(&d);
+                        match self.source.clone() {
+                            // (The empty path is the list of drives on Windows.)
+                            Source::Dir(d) if !d.as_os_str().is_empty() => {
+                                if !self.cfg.roots.contains(&d) {
+                                    self.toggle_library(&d);
+                                }
                             }
-                        } else {
-                            self.toast("Open a folder in the browser first");
+                            _ => self.toast("Open a folder in the browser first"),
                         }
                     }
                     Some(Row::Bind(c, act)) => match a {

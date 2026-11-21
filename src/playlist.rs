@@ -30,11 +30,13 @@ pub fn read(p: &Path) -> Vec<PathBuf> {
         .map(|l| l.trim().trim_start_matches('\u{feff}'))
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .filter_map(|l| {
-            let l = l.strip_prefix("file://").unwrap_or(l);
+            let l = crate::os::from_file_uri(l);
             if l.contains("://") {
                 return None;
             }
-            let path = PathBuf::from(l.replace('\\', "/"));
+            // Playlists made on another OS may use the other separator.
+            let l = if cfg!(windows) { l.replace('/', "\\") } else { l.replace('\\', "/") };
+            let path = PathBuf::from(l);
             Some(if path.is_absolute() { path } else { base.join(path) })
         })
         .collect()
@@ -67,11 +69,23 @@ pub fn list_own() -> Vec<PathBuf> {
     v.into_iter().map(|(_, p)| p).collect()
 }
 
+/// `base` made safe as a file name on every OS (Windows is the strictest).
+fn clean_name(base: &str) -> String {
+    let clean: String = base.chars().map(|c| if r#"/\:*?"<>|"#.contains(c) || c.is_control() { ' ' } else { c }).collect();
+    let clean = clean.trim().trim_end_matches('.').trim_end();
+    if clean.is_empty() {
+        return "Playlist".into();
+    }
+    // CON, NUL, COM1… can't be file names on Windows, even with an extension.
+    let stem = clean.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let reserved = ["CON", "PRN", "AUX", "NUL"].contains(&stem.as_str())
+        || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit());
+    if reserved { format!("_{clean}") } else { clean.to_string() }
+}
+
 /// A new playlist file named `base` (or `base 2`, `base 3`… if taken).
 pub fn new_path(base: &str) -> PathBuf {
-    let clean: String = base.chars().map(|c| if c == '/' || c == '\\' || c == ':' { ' ' } else { c }).collect();
-    let clean = clean.trim();
-    let clean = if clean.is_empty() { "Playlist" } else { clean };
+    let clean = clean_name(base);
     let d = dir();
     let mut n = 1;
     loop {
@@ -111,10 +125,23 @@ mod tests {
         let d = std::env::temp_dir().join(format!("jimmy-pl-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let p = d.join("x.m3u");
-        std::fs::write(&p, "#EXTM3U\n#EXTINF:12,A\na.mkv\n\n/abs/b.mp4\nhttp://x/y.mp4\nsub\\c.avi\n").unwrap();
-        assert_eq!(read(&p), [d.join("a.mkv"), PathBuf::from("/abs/b.mp4"), d.join("sub/c.avi")]);
-        assert_eq!(add(&p, &[d.join("a.mkv"), PathBuf::from("/new.mkv")]).unwrap(), 1);
-        assert_eq!(read(&p).last().unwrap(), &PathBuf::from("/new.mkv"));
+        // Absolute paths from the temp dir, so they're absolute on Windows too (with a drive).
+        let abs = std::env::temp_dir().join("abs").join("b.mp4");
+        let new = std::env::temp_dir().join("new.mkv");
+        std::fs::write(&p, format!("#EXTM3U\n#EXTINF:12,A\na.mkv\n\n{}\nhttp://x/y.mp4\nsub\\c.avi\n", abs.display())).unwrap();
+        assert_eq!(read(&p), [d.join("a.mkv"), abs, d.join("sub").join("c.avi")]);
+        assert_eq!(add(&p, &[d.join("a.mkv"), new.clone()]).unwrap(), 1);
+        assert_eq!(read(&p).last().unwrap(), &new);
         std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn clean_names() {
+        assert_eq!(clean_name("What? Now: Part 1/2"), "What  Now  Part 1 2");
+        assert_eq!(clean_name("trailing... "), "trailing");
+        assert_eq!(clean_name("  "), "Playlist");
+        assert_eq!(clean_name("con"), "_con");
+        assert_eq!(clean_name("COM1.mix"), "_COM1.mix");
+        assert_eq!(clean_name("Comedy"), "Comedy");
     }
 }

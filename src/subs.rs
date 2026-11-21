@@ -91,7 +91,7 @@ fn enc(s: &str) -> String {
 
 /// GET with curl. Returns the body, or a readable error.
 fn get(url: &str) -> Result<Vec<u8>, String> {
-    let out = std::process::Command::new("curl")
+    let out = crate::os::command("curl")
         .args(["-sSL", "--max-time", "25", "--proto", "=https", "-A", AGENT, "-H", &format!("X-User-Agent: {AGENT}"), "-w", "\n%{http_code}", url])
         .stdin(std::process::Stdio::null())
         .output()
@@ -195,24 +195,12 @@ fn strip_ads(text: &str) -> String {
 /// Downloads one subtitle into the video's cache folder. Returns the saved file.
 pub fn download(video: &Path, found: &Found) -> Result<PathBuf, String> {
     let gz = get(&found.link)?;
-    // Unpack with the system gzip (on every macOS and Fedora install).
-    let mut child = std::process::Command::new("gzip")
-        .args(["-dc"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| format!("gzip: {e}"))?;
-    {
-        use std::io::Write;
-        let mut stdin = child.stdin.take().ok_or("gzip: no input")?;
-        stdin.write_all(&gz).map_err(|e| format!("gzip: {e}"))?;
-    }
-    let out = child.wait_with_output().map_err(|e| format!("gzip: {e}"))?;
-    if !out.status.success() || out.stdout.is_empty() {
+    let mut raw = Vec::new();
+    let ok = flate2::read::GzDecoder::new(&gz[..]).read_to_end(&mut raw).is_ok();
+    if !ok || raw.is_empty() {
         return Err("The subtitle file was damaged; try another one".into());
     }
-    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let text = String::from_utf8_lossy(&raw).into_owned();
     let ext = if found.format.is_empty() { "srt".to_string() } else { found.format.to_ascii_lowercase() };
     let body = if ext == "srt" { strip_ads(&text) } else { text };
     let dir = cache_dir(video);

@@ -2,11 +2,18 @@
 //!
 //! Linux: `~/.config/jimmy/` and `~/.local/share/jimmy/`.
 //! macOS: `~/Library/Application Support/jimmy/` for both.
+//! Windows: `%APPDATA%\jimmy\config\` and `%APPDATA%\jimmy\data\`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Windows: the GL render API can't take D3D11 frames directly, so copy decoded frames back.
+#[cfg(windows)]
+pub const DEFAULT_HWDEC: &str = "d3d11va-copy,dxva2-copy,auto-copy-safe";
+#[cfg(not(windows))]
+pub const DEFAULT_HWDEC: &str = "auto-safe";
 
 pub fn project_dirs() -> Option<directories::ProjectDirs> {
     directories::ProjectDirs::from("", "", "jimmy")
@@ -191,7 +198,7 @@ impl Default for Config {
             seek_small_secs: 10.0,
             seek_large_secs: 60.0,
             resume: true,
-            hwdec: "auto-safe".into(),
+            hwdec: DEFAULT_HWDEC.into(),
             rescue_mode: false,
             sub_scale: 1.0,
             sub_background_box: true,

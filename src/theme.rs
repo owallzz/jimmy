@@ -173,6 +173,7 @@ mod tests {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), 20);
+        assert!(t.iter().all(|t| !t.name.is_empty() && t.palette.text != t.palette.bg));
     }
 
     #[test]

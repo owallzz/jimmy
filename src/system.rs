@@ -6,9 +6,11 @@
 //! - Linux backlight: read `/sys/class/backlight`, write through systemd-logind (`busctl`), which
 //!   works without root for the active session and keeps GNOME's slider in sync.
 //! - Linux screen awake (whole time jimmy is open): `gnome-session-inhibit`, falling back to `systemd-inhibit`.
-//! - macOS (development): `osascript` for volume, `caffeinate` to stay awake, no backlight.
+//! - macOS: `osascript` for volume, `caffeinate` to stay awake, no backlight.
+//! - Windows: `SetThreadExecutionState` to stay awake; volume is mpv's own, no backlight.
 
-use std::process::{Child, Command, Stdio};
+#[cfg(unix)]
+use std::process::{Command, Stdio};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -84,7 +86,7 @@ impl System {
 }
 
 fn worker(rx: Receiver<Cmd>, shared: Arc<Mutex<Snapshot>>, ctx: egui::Context) {
-    let mut inhibitor: Option<Child> = None;
+    let mut inhibitor: Option<awake::Guard> = None;
     let backlight = backlight::Device::find();
     while let Ok(first) = rx.recv() {
         // Coalesce bursts (holding a button sends many commands): keep only the latest of each.
@@ -114,12 +116,7 @@ fn worker(rx: Receiver<Cmd>, shared: Arc<Mutex<Snapshot>>, ctx: egui::Context) {
         if let Some(on) = inhibit {
             match (on, inhibitor.is_some()) {
                 (true, false) => inhibitor = awake::start(),
-                (false, true) => {
-                    if let Some(mut c) = inhibitor.take() {
-                        let _ = c.kill();
-                        let _ = c.wait();
-                    }
-                }
+                (false, true) => inhibitor = None,
                 _ => {}
             }
         }
@@ -134,11 +131,10 @@ fn worker(rx: Receiver<Cmd>, shared: Arc<Mutex<Snapshot>>, ctx: egui::Context) {
             }
         }
     }
-    if let Some(mut c) = inhibitor {
-        let _ = c.kill();
-    }
+    // Dropping `inhibitor` here ends the keep-awake.
 }
 
+#[cfg(unix)]
 fn run(cmd: &str, args: &[&str]) -> Option<String> {
     let out = Command::new(cmd).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
@@ -273,10 +269,25 @@ mod backlight {
     }
 }
 
+/// Keeps the screen on while a `Guard` is alive.
 mod awake {
+    #[cfg(unix)]
     use std::process::{Child, Command, Stdio};
 
-    fn spawn(cmd: &str, args: &[&str]) -> Option<Child> {
+    /// Unix: the inhibitor child process, ended on drop.
+    #[cfg(unix)]
+    pub struct Guard(Child);
+
+    #[cfg(unix)]
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[cfg(unix)]
+    fn spawn(cmd: &str, args: &[&str]) -> Option<Guard> {
         Command::new(cmd)
             .args(args)
             .stdin(Stdio::null())
@@ -284,26 +295,42 @@ mod awake {
             .stderr(Stdio::null())
             .spawn()
             .ok()
+            .map(Guard)
     }
 
     // The inhibitor runs a tiny watch loop instead of `sleep infinity`, so if jimmy ever
     // crashes the inhibit ends within seconds instead of keeping the screen on forever.
     #[cfg(target_os = "linux")]
-    pub fn start() -> Option<Child> {
+    pub fn start() -> Option<Guard> {
         let watch = format!("while kill -0 {} 2>/dev/null; do sleep 2; done", std::process::id());
         spawn("gnome-session-inhibit", &["--inhibit", "idle:suspend", "--reason", "jimmy is open", "--app-id", "jimmy", "sh", "-c", &watch])
             .or_else(|| spawn("systemd-inhibit", &["--what=idle:sleep", "--who=jimmy", "--why=jimmy is open", "sh", "-c", &watch]))
     }
 
     #[cfg(target_os = "macos")]
-    pub fn start() -> Option<Child> {
+    pub fn start() -> Option<Guard> {
         // -w: caffeinate exits by itself when jimmy does.
         spawn("caffeinate", &["-d", "-w", &std::process::id().to_string()])
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    pub fn start() -> Option<Child> {
-        None
+    // The execution state belongs to the calling thread; the long-lived `system` worker both
+    // sets and clears it.
+    #[cfg(windows)]
+    pub struct Guard;
+
+    #[cfg(windows)]
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            use windows_sys::Win32::System::Power::{ES_CONTINUOUS, SetThreadExecutionState};
+            unsafe { SetThreadExecutionState(ES_CONTINUOUS) };
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn start() -> Option<Guard> {
+        use windows_sys::Win32::System::Power::{ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED, SetThreadExecutionState};
+        let ok = unsafe { SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED) } != 0;
+        ok.then_some(Guard)
     }
 }
 

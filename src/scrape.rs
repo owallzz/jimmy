@@ -390,7 +390,7 @@ fn urlencode(s: &str) -> String {
 }
 
 fn curl(url: &str, headers: &[String]) -> Option<Vec<u8>> {
-    let mut cmd = std::process::Command::new("curl");
+    let mut cmd = crate::os::command("curl");
     // Wikimedia asks for a User-Agent that names the app and where it lives.
     cmd.args(["-fsSL", "--max-time", "20", "--proto", "=https", "-A", concat!("jimmy/", env!("CARGO_PKG_VERSION"), " (media player; https://github.com/owallzz/jimmy)")]);
     for h in headers {

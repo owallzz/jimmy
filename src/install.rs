@@ -1,4 +1,5 @@
-//! `jimmy --install` / `--uninstall`: per-user desktop integration (Linux).
+//! `jimmy --install` / `--uninstall`: per-user desktop integration (Linux). On Windows and
+//! macOS the installer / app bundle does this instead.
 //! The launcher and icon are embedded in the binary, so jimmy stays a single file.
 
 const DESKTOP: &str = include_str!("../assets/jimmy.desktop");
@@ -83,14 +84,25 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
 mod imp {
     pub fn install(_: bool) -> anyhow::Result<()> {
         let _ = (super::DESKTOP, super::ICON);
-        anyhow::bail!("--install sets up the Linux desktop launcher; it does nothing on this platform")
+        anyhow::bail!("--install is for Linux. On Windows, run the jimmy setup .exe to add jimmy to the Start menu and \"Open with\".")
     }
     pub fn uninstall() -> anyhow::Result<()> {
-        anyhow::bail!("--uninstall only applies on Linux")
+        anyhow::bail!("--uninstall is for Linux. On Windows, uninstall jimmy from Settings > Apps.")
+    }
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+mod imp {
+    pub fn install(_: bool) -> anyhow::Result<()> {
+        let _ = (super::DESKTOP, super::ICON);
+        anyhow::bail!("--install is for Linux. On macOS, drag jimmy.app into Applications.")
+    }
+    pub fn uninstall() -> anyhow::Result<()> {
+        anyhow::bail!("--uninstall is for Linux. On macOS, move jimmy.app to the Trash.")
     }
 }
 
