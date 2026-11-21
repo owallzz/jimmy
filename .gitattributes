@@ -1,0 +1,6 @@
+# LF everywhere, also in Git for Windows checkouts (core.autocrlf=true on the CI runners):
+# MSYS2 bash fails on CRLF scripts ($'\r': command not found).
+* text=auto eol=lf
+*.ico binary
+*.png binary
+*.jpg binary
