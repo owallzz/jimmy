@@ -398,34 +398,43 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: jimmy-*
           merge-multiple: true
+      - name: Check the asset list
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          cd dist && ls -l
+          for f in "jimmy-$V-linux-x86_64" "jimmy-$V-x86_64.AppImage" "jimmy-$V-x86_64.flatpak" \
+                   "jimmy-$V-windows-x86_64-setup.exe" "jimmy-$V-windows-x86_64-portable.exe" \
+                   "jimmy-$V-macos-universal.dmg"; do
+            [ -s "$f" ] || { echo "::error::missing $f"; exit 1; }
+          done
+          [ "$(ls jimmy-"$V"-*.x86_64.rpm | wc -l)" = 1 ] || { echo "::error::expected one RPM"; exit 1; }
+          [ "$(ls | wc -l)" = 7 ] || { echo "::error::expected exactly 7 files"; exit 1; }
       - name: Checksums
-        run: cd dist && ls -l && sha256sum * > SHA256SUMS && cat SHA256SUMS
+        run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - name: Release notes
+        run: |
+          # "What's new" comes from docs/whats-new/X.Y.Z.md when it was committed before tagging.
+          V="${GITHUB_REF_NAME#v}"
+          new="docs/whats-new/$V.md"; [ -f "$new" ] || new=""
+          packaging/release-notes.sh "$V" "$(basename dist/jimmy-"$V"-*.x86_64.rpm)" $new > notes.md
+          cat notes.md
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          V="${GITHUB_REF_NAME#v}"
-          cat > notes.md <<EOF
-          A lightweight, gamepad-friendly media player and library. Every build has mpv and FFmpeg
-          built in (every decoder and container), so nothing else needs to be installed.
-
-          | System | Download |
-          |---|---|
-          | **Windows 10/11** (x64) | \`jimmy-$V-windows-x86_64-setup.exe\` (installer) or \`jimmy-$V-windows-x86_64-portable.exe\` (no install) |
-          | **macOS 11+** (Apple Silicon and Intel) | \`jimmy-$V-macos-universal.dmg\` |
-          | **Linux** (x86_64, glibc 2.34+: Ubuntu 22.04, Debian 12, Fedora, RHEL 9 and newer) | \`.flatpak\`, \`.AppImage\`, \`.rpm\` (Fedora/RHEL/openSUSE), or the standalone \`jimmy-$V-linux-x86_64\` executable |
-
-          - **Linux:** \`flatpak install --user ./jimmy-$V-x86_64.flatpak\`, or \`chmod +x\` the AppImage or the standalone file and run it (\`./jimmy-$V-linux-x86_64 --install\` adds it to the app menu). RPM: \`sudo dnf install ./jimmy-$V-*.x86_64.rpm\`.
-          - **Windows:** the installer and exe aren't code-signed, so SmartScreen may warn: choose *More info → Run anyway*.
-          - **macOS:** the app isn't notarized. After the first launch is blocked, open *System Settings → Privacy & Security* and choose *Open Anyway*, or run \`xattr -dr com.apple.quarantine /Applications/jimmy.app\`.
-
-          jimmy is MIT licensed. The release binaries include mpv (GPL-2.0-or-later), so they are distributed under the GPL; see THIRD-PARTY.md in the repository.
-          EOF
-          sed -i 's/^          //' notes.md
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" --title "jimmy $GITHUB_REF_NAME" --notes-file notes.md
+      - name: Check the download links
+        run: |
+          fail=0
+          for u in $(grep -o "https://github.com/$GITHUB_REPOSITORY/releases/download/[^)]*" notes.md); do
+            code="$(curl -sIL -o /dev/null -w '%{http_code}' "$u")"
+            echo "$code ${u##*/}"; [ "$code" = 200 ] || fail=1
+          done
+          exit "$fail"
