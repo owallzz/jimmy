@@ -91,6 +91,14 @@ fn main() {
             println!("cargo:rustc-link-lib={l}");
         }
     }
+    // FFmpeg's VideoToolbox code uses `@available`, which needs `__isPlatformVersionAtLeast`
+    // from clang's runtime. clang links it by itself, rustc doesn't.
+    if os == "macos" {
+        let out = Command::new("cc").arg("-print-resource-dir").output().expect("running cc -print-resource-dir");
+        let rt = format!("{}/lib/darwin/libclang_rt.osx.a", String::from_utf8_lossy(&out.stdout).trim());
+        assert!(Path::new(&rt).exists(), "clang runtime not found at {rt}");
+        println!("cargo:rustc-link-arg={rt}");
+    }
 }
 
 /// Libraries every Mac has (in the SDK), fine to link dynamically.
