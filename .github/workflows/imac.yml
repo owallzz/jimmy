@@ -1,5 +1,5 @@
-# A fully optimised static build for the iMac, made on the self-hosted runner instead of the
-# iMac's slow i3: release, opt-level 3, fat LTO, one codegen unit, trimmed static
+# A fully optimised static build for old machines, made in CI instead of on a slow target
+# CPU: release, opt-level 3, fat LTO, one codegen unit, trimmed static
 # mpv/FFmpeg/libplacebo with dav1d (software AV1). Generic x86-64-v2 baseline (any x86_64 CPU
 # since 2009), the same static mpv the release workflow builds and caches.
 # Runs when the build/imac branch is pushed (or by hand); the RPM is a workflow artifact.
@@ -15,8 +15,9 @@ permissions:
 
 jobs:
   build:
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     container: fedora:44
+    timeout-minutes: 180
     env:
       RUSTFLAGS: "-C target-cpu=x86-64-v2"
       CARGO_PROFILE_RELEASE_LTO: fat

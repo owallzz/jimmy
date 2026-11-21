@@ -22,9 +22,10 @@ env:
 jobs:
   build:
     name: build (${{ matrix.variant }})
-    # The org's self-hosted runner (Linux with Docker); the build runs in a Fedora container.
-    runs-on: [self-hosted, linux, x64]
+    # GitHub-hosted runner; the build runs in a Fedora container so the RPMs match Fedora.
+    runs-on: ubuntu-latest
     container: fedora:44
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -105,13 +106,11 @@ jobs:
   release:
     if: startsWith(github.ref, 'refs/tags/')
     needs: build
-    runs-on: [self-hosted, linux, x64]
-    container: fedora:44
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
-      - name: Install gh
-        run: dnf -y --setopt=install_weak_deps=False install gh
       - uses: actions/download-artifact@v4
         with:
           path: dist

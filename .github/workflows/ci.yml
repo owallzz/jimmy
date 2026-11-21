@@ -1,0 +1,46 @@
+# Build and test on every push and pull request, against Fedora's system libmpv (the
+# "dynamic" variant). Runs in a Fedora container so mpv and the toolchain match the release builds.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: fedora:44
+    timeout-minutes: 45
+    steps:
+      - name: Install build dependencies
+        run: dnf -y --setopt=install_weak_deps=False install git cargo rust gcc systemd-devel mpv-devel
+
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ci-fc44-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ci-fc44-
+
+      - name: Build
+        run: cargo build --locked
+
+      - name: Test
+        run: cargo test --locked
