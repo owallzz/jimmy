@@ -29,51 +29,60 @@
   <img src="docs/images/library-list.png" alt="List view of the Movies library with length, size and file details" width="900">
 </p>
 
-## Install on Fedora
+## Install
 
-Fedora's own ffmpeg can't decode H.264/HEVC. Enable RPM Fusion first:
+Download from the [latest release](https://github.com/owallzz/jimmy/releases/latest). Every build
+has mpv and FFmpeg built in (every decoder and container). Posters, library metadata and subtitle
+downloads use the system's `curl`, which Windows 10/11, macOS and most Linux distros include
+(on a minimal Debian/Ubuntu install: `sudo apt install curl`).
+
+| System | File |
+|---|---|
+| Windows 10/11 (x64) | `jimmy-*-windows-x86_64-setup.exe`, or `*-portable.exe` to run without installing |
+| macOS 11+ (Apple Silicon and Intel) | `jimmy-*-macos-universal.dmg` |
+| Linux x86_64 (glibc 2.34+: Ubuntu 22.04, Debian 12, Fedora, RHEL 9 and newer) | `.flatpak`, `.AppImage`, `.rpm`, or the standalone `jimmy-*-linux-x86_64` |
+
+**Linux**
+
+```bash
+flatpak install --user ./jimmy-*-x86_64.flatpak     # Flatpak
+sudo dnf install ./jimmy-*.x86_64.rpm               # Fedora / RHEL
+chmod +x jimmy-*-linux-x86_64 && ./jimmy-*-linux-x86_64 --install   # standalone
+```
+
+`--install` copies the binary to `~/.local/bin/jimmy` and adds a launcher and icon to the app
+menu (add `--default` to make it the default video player). `jimmy --uninstall` removes them.
+The AppImage runs as is after `chmod +x`. The Flatpak is sandboxed, so system volume, backlight
+control and keeping the screen awake during playback aren't available in it.
+
+**Windows:** the installer and exe aren't code-signed, so SmartScreen may warn the first time:
+choose *More info → Run anyway*. The installer adds jimmy to the Start menu and to *Open with*
+for video files. The volume control sets jimmy's own volume (not the system's), and there is no
+backlight control.
+
+**macOS:** the app isn't notarized. After macOS blocks the first launch, open *System Settings →
+Privacy & Security* and choose *Open Anyway* (or run
+`xattr -dr com.apple.quarantine /Applications/jimmy.app`). There is no backlight control on macOS.
+
+Gamepads: Xbox controllers work out of the box. PS5 DualSense works over USB or Bluetooth (on
+Linux through the kernel's `hid-playstation` driver).
+
+### Build from source
+
+On Fedora, against the system libmpv (enable RPM Fusion first: Fedora's own ffmpeg can't decode
+H.264/HEVC):
 
 ```bash
 sudo dnf install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
 sudo dnf swap ffmpeg-free ffmpeg --allowerasing
 sudo dnf install mpv-libs mpv-devel gcc systemd-devel
-# Hardware H.264 decoding on AMD/Radeon:
-sudo dnf swap mesa-va-drivers mesa-va-drivers-freeworld
-```
-
-### Install the RPM
-
-```bash
-sudo dnf install ./jimmy-0.1.0-*.fc44.x86_64.rpm
-```
-
-This puts `jimmy` in `/usr/bin` and adds it to the app menu. To build the RPM yourself, see
-[packaging/README.md](packaging/README.md).
-
-### Or build from source
-
-Build and add to the app menu:
-
-```bash
 curl https://sh.rustup.rs -sSf | sh     # if Rust isn't installed
 cargo build --release
-./target/release/jimmy --install          # add --default to make it the default video player
+./target/release/jimmy --install
 ```
 
-`--install` copies the binary to `~/.local/bin/jimmy` and adds a launcher and icon, so jimmy shows up in
-GNOME's app grid. `jimmy --uninstall` removes them.
-
-Gamepads: Xbox controllers work out of the box. PS5 DualSense works over USB or Bluetooth with the kernel's
-`hid-playstation` driver (built into Fedora).
-
-## macOS (development)
-
-```bash
-brew install mpv
-cargo run -- ~/Movies
-```
-
-System volume works through `osascript`; there is no backlight control on macOS.
+On macOS for development: `brew install mpv && cargo run -- ~/Movies`. The static release builds
+for every platform are described in [packaging/README.md](packaging/README.md).
 
 ## Controls (defaults, all remappable in Settings → Controls)
 
@@ -103,8 +112,10 @@ press X (□) (Shift+Enter on a keyboard); press it again to remove it. Library 
 
 In the browser, press `/` to filter: type, Enter keeps the filter, Esc clears it. With a controller,
 Y (△) opens an on-screen keyboard: D-pad/stick moves, A (✕) types, X (□) deletes, Y (△) adds a space,
-B (○) or ≡ finishes. Results filter live while you type. Settings live in
-`~/.config/jimmy/` (`config.toml`, `bindings.toml`), history in `~/.local/share/jimmy/state.toml`.
+B (○) or ≡ finishes. Results filter live while you type. Settings (`config.toml`,
+`bindings.toml`) and history (`state.toml`) live in `~/.config/jimmy/` and `~/.local/share/jimmy/`
+on Linux (`~/.var/app/io.github.owallzz.jimmy/` in the Flatpak), `~/Library/Application Support/jimmy/`
+on macOS, and `%APPDATA%\jimmy\` on Windows.
 The clock is 12-hour by default; switch to 24-hour in Settings → General.
 
 ## Libraries, TV shows, movies and playlists
@@ -150,7 +161,7 @@ The clock is 12-hour by default; switch to 24-hour in Settings → General.
 
 ```
 jimmy [FILE | FOLDER] [--fullscreen | --windowed] [--size WxH]
-jimmy --install [--default] | --uninstall
+jimmy --install [--default] | --uninstall    # Linux: add to / remove from the app menu
 ```
 
 For testing, `--actions` runs a script of actions and can save screenshots:
@@ -174,5 +185,6 @@ Packaging, the static mpv/FFmpeg build and the release workflow are described in
 
 ## License
 
-MIT. See [LICENSE](LICENSE). The static builds also include mpv (GPL-2.0-or-later as built),
-FFmpeg and libplacebo (LGPL-2.1-or-later) and dav1d (BSD-2-Clause).
+jimmy's source is MIT licensed. See [LICENSE](LICENSE). The release binaries include mpv
+(GPL-2.0-or-later as built), FFmpeg and other libraries, so they are distributed under the GPL.
+See [THIRD-PARTY.md](THIRD-PARTY.md).

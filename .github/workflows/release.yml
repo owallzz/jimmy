@@ -1,136 +1,431 @@
-# Linux x86_64 builds of jimmy in three variants. Pushing a tag vX.Y.Z (matching Cargo.toml's
-# version) publishes a GitHub release; running it by hand only uploads workflow artifacts.
-#   dynamic      system libmpv/FFmpeg (RPM requires mpv-libs)
-#   static       slim static mpv + FFmpeg with every decoder and demuxer
-#   static-slim  slim static mpv + FFmpeg with only common codecs and containers
+# Release builds of jimmy for Linux, Windows and macOS on GitHub-hosted runners. Pushing a tag
+# vX.Y.Z (matching Cargo.toml's version) publishes a GitHub release; running it by hand only
+# uploads workflow artifacts.
+#
+# Every build links the trimmed static mpv + FFmpeg + libplacebo + dav1d + libass (the "full"
+# codec profile: every decoder and demuxer, no encoders, muxers, devices or network) and is
+# compiled with opt-level 3, fat LTO, one codegen unit, panic=abort and stripped symbols.
+#
+# Assets (single files, no archives):
+#   Linux    jimmy-V-linux-x86_64 (standalone), .AppImage, .flatpak, .rpm  (glibc 2.34+)
+#   Windows  jimmy-V-windows-x86_64-setup.exe, jimmy-V-windows-x86_64-portable.exe
+#   macOS    jimmy-V-macos-universal.dmg (Apple Silicon + Intel, macOS 11+)
 name: release
 
 on:
   push:
     tags: ["v*"]
+    # Packaging changes on main build everything too (without publishing). This also keeps the
+    # static mpv caches on the default branch, where release tags can restore them.
+    branches: [main]
+    paths:
+      - "packaging/**"
+      - "build.rs"
+      - "Cargo.lock"
+      - ".github/workflows/release.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 env:
-  FEDORA: "44"
-  # x86-64-v2 = SSE4.2/POPCNT: any x86_64 CPU since 2009 (Nehalem / Bulldozer).
-  RUSTFLAGS: "-C target-cpu=x86-64-v2"
   CARGO_TERM_COLOR: always
+  CARGO_PROFILE_RELEASE_OPT_LEVEL: "3"
+  CARGO_PROFILE_RELEASE_LTO: fat
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+  CARGO_PROFILE_RELEASE_PANIC: abort
+  CARGO_PROFILE_RELEASE_STRIP: "true"
+  # x86-64-v2 = SSE4.2/POPCNT: any x86_64 CPU since 2009. macOS's make-app.sh sets its own
+  # per target (apple-m1 for arm64).
+  RUSTFLAGS: "-C target-cpu=x86-64-v2"
 
 jobs:
-  build:
-    name: build (${{ matrix.variant }})
-    # GitHub-hosted runner; the build runs in a Fedora container so the RPMs match Fedora.
+  check-version:
     runs-on: ubuntu-latest
-    container: fedora:44
-    timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - variant: dynamic
-            profile: ""
-          - variant: static
-            profile: full
-          - variant: static-slim
-            profile: slim
+    timeout-minutes: 5
     steps:
-      - name: Install build dependencies
-        run: |
-          pkgs="git cargo rust gcc gcc-c++ systemd-devel rpm-build tar gzip"
-          if [ -z "${{ matrix.profile }}" ]; then
-            pkgs="$pkgs mpv-devel"
-          else
-            pkgs="$pkgs meson ninja-build nasm python3-jinja2 curl xz libass-devel libva-devel
-                  libdrm-devel libdisplay-info-devel pipewire-devel alsa-lib-devel mesa-libEGL-devel
-                  zlib-ng-compat-devel"
-          fi
-          dnf -y --setopt=install_weak_deps=False install $pkgs
-
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # release number = commit count
-
-      - name: Check tag matches Cargo.toml
+      - uses: actions/checkout@v7
+      - name: Tag matches Cargo.toml
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           v="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
-          [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != Cargo.toml v$v"; exit 1; }
+          [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "::error::tag ${GITHUB_REF_NAME} != Cargo.toml v$v"; exit 1; }
 
-      - name: Cache static mpv
-        if: matrix.profile != ''
+  # ---------------------------------------------------------------- Linux
+  # One portable binary built on AlmaLinux 9 (glibc 2.34), packaged four ways.
+  linux:
+    needs: check-version
+    runs-on: ubuntu-24.04
+    container: almalinux:9
+    timeout-minutes: 180
+    steps:
+      - name: Install build dependencies
+        run: |
+          dnf -y install epel-release dnf-plugins-core
+          dnf config-manager --set-enabled crb
+          # No `curl` here: it conflicts with curl-minimal, which almalinux:9 already has.
+          dnf -y --setopt=install_weak_deps=False install git gcc gcc-c++ make nasm xz tar gzip \
+            python3 python3-pip python3-jinja2 pkgconf-pkg-config ninja-build hwdata binutils \
+            rpm-build systemd-devel libva-devel libdrm-devel mesa-libEGL-devel alsa-lib-devel \
+            pulseaudio-libs-devel zlib-devel freetype-devel harfbuzz-devel fribidi-devel \
+            fontconfig-devel bzip2-devel libpng-devel brotli-devel glib2-devel graphite2-devel \
+            expat-devel
+          pip3 install 'meson>=1.3,<2'
+          curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # RPM release number = commit count
+      - run: git config --global --add safe.directory '*'
+
+      - name: Restore static mpv
         id: mpv-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v6
         with:
           path: /opt/jimmy-mpv
-          key: mpv-fc${{ env.FEDORA }}-${{ matrix.profile }}-${{ hashFiles('packaging/build-slim-mpv.sh') }}
-
-      - name: Build static mpv (${{ matrix.profile }})
-        if: matrix.profile != '' && steps.mpv-cache.outputs.cache-hit != 'true'
+          key: mpv-el9-full-${{ hashFiles('packaging/build-slim-mpv.sh') }}
+      - name: Build static mpv
+        if: steps.mpv-cache.outputs.cache-hit != 'true'
         run: |
-          git config --global --add safe.directory '*'
-          PROFILE=${{ matrix.profile }} packaging/build-slim-mpv.sh /opt/jimmy-mpv
+          PROFILE=full PIPEWIRE=disabled PULSE=enabled packaging/build-slim-mpv.sh /opt/jimmy-mpv
           rm -rf /opt/jimmy-mpv/src
+      # Saved right away, so a later failure doesn't throw away the long mpv build.
+      - name: Save static mpv
+        if: steps.mpv-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: /opt/jimmy-mpv
+          key: ${{ steps.mpv-cache.outputs.cache-primary-key }}
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: cargo-fc${{ env.FEDORA }}-${{ matrix.variant }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-fc${{ env.FEDORA }}-${{ matrix.variant }}-
+          key: cargo-el9-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-el9-
 
       - name: Build jimmy
+        run: JIMMY_MPV_PREFIX=/opt/jimmy-mpv cargo build --release --locked
+
+      - name: Check portability and package
         run: |
-          git config --global --add safe.directory "$PWD"
-          if [ -n "${{ matrix.profile }}" ]; then export JIMMY_MPV_PREFIX=/opt/jimmy-mpv; fi
-          JIMMY_VARIANT=${{ matrix.variant }} packaging/build-rpm.sh dist
+          packaging/check-portable.sh target/release/jimmy
+          ./target/release/jimmy --version
+          V="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          mkdir -p dist
+          cp target/release/jimmy "dist/jimmy-$V-linux-x86_64"
+          JIMMY_BIN=target/release/jimmy packaging/build-rpm.sh dist
+          rpm -qp --info dist/*.rpm | grep -E '^(Release|License)'
+          rpm -qp --requires dist/*.rpm
           ls -l dist
 
-      - name: Smoke test
-        run: |
-          rpm -qp --requires dist/*.rpm | grep -v '^rpmlib'
-          ./target/release/jimmy --version
-          ldd target/release/jimmy | grep -E 'mpv|avcodec' || echo "(no shared mpv/FFmpeg)"
-
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
-          name: jimmy-${{ matrix.variant }}
+          name: jimmy-linux
           path: dist/*
           if-no-files-found: error
 
+  linux-appimage:
+    needs: linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: jimmy-linux
+          path: bin
+      - name: Install runtime libraries (for the smoke test)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libva2 libva-drm2 libasound2t64 libpulse0 \
+            libegl1 libdrm2 libudev1 libfontconfig1 libfreetype6 libharfbuzz0b libfribidi0
+      - name: Build AppImage
+        run: |
+          V="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          chmod +x "bin/jimmy-$V-linux-x86_64"
+          packaging/linux/make-appimage.sh "bin/jimmy-$V-linux-x86_64" dist
+          APPIMAGE_EXTRACT_AND_RUN=1 "dist/jimmy-$V-x86_64.AppImage" --version
+      - uses: actions/upload-artifact@v7
+        with:
+          name: jimmy-appimage
+          path: dist/*.AppImage
+          if-no-files-found: error
+
+  linux-flatpak:
+    needs: linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: jimmy-linux
+          path: bin
+      - name: Install flatpak-builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          # Ubuntu 24.04 blocks the unprivileged user namespaces bubblewrap needs.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+      - name: Build Flatpak bundle
+        run: |
+          V="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          chmod +x "bin/jimmy-$V-linux-x86_64"
+          packaging/linux/make-flatpak.sh "bin/jimmy-$V-linux-x86_64" dist
+          flatpak --user install -y --noninteractive "dist/jimmy-$V-x86_64.flatpak"
+          flatpak run io.github.owallzz.jimmy --version
+      - uses: actions/upload-artifact@v7
+        with:
+          name: jimmy-flatpak
+          path: dist/*.flatpak
+          if-no-files-found: error
+
+  # The standalone binary must start on the oldest distros we support.
+  linux-smoke:
+    needs: linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:22.04", "ubuntu:24.04", "debian:12", "fedora:latest"]
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: jimmy-linux
+          path: bin
+      - name: Install runtime libraries
+        run: |
+          if command -v apt-get >/dev/null; then
+            apt-get update
+            asound=libasound2; apt-cache show libasound2t64 >/dev/null 2>&1 && asound=libasound2t64
+            apt-get install -y --no-install-recommends libva2 libva-drm2 "$asound" libpulse0 libegl1 \
+              libdrm2 libudev1 libfontconfig1 libfreetype6 libharfbuzz0b libfribidi0 libstdc++6
+          else
+            dnf -y install libva libdrm alsa-lib pulseaudio-libs libglvnd-egl systemd-libs \
+              fontconfig freetype harfbuzz fribidi libstdc++
+          fi
+      - name: Start jimmy
+        run: |
+          f="$(ls bin/jimmy-*-linux-x86_64)"
+          chmod +x "$f" && "$f" --version
+
+  # ---------------------------------------------------------------- Windows
+  windows:
+    needs: check-version
+    runs-on: windows-latest
+    timeout-minutes: 180
+    env:
+      # MSYS2's cargo is a native Windows program; give it a known home to cache.
+      CARGO_HOME: ${{ github.workspace }}/.cargo-home
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - run: git config --global core.autocrlf false
+        shell: pwsh
+      - uses: actions/checkout@v7
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          cache: true
+          install: git curl tar xz make diffutils
+          # Not ffmpeg/mpv/libass/libplacebo/harfbuzz/freetype: their .pc/.dll.a would shadow ours.
+          pacboy: gcc:p meson:p ninja:p nasm:p pkgconf:p python-jinja:p zlib:p libiconv:p rust:p
+
+      - name: Paths and toolchain id
+        id: tc
+        run: |
+          echo "prefix=$(cygpath -m "$RUNNER_TEMP")/jimmy-mpv" >> "$GITHUB_OUTPUT"
+          echo "gcc=$(gcc -dumpfullversion)" >> "$GITHUB_OUTPUT"
+          echo "rust=$(rustc --version | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+          echo "version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore static mpv
+        id: mpv-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/jimmy-mpv
+          # The prefix path is baked into the .pc files, so it's part of the key.
+          key: mpv-win64-gcc${{ steps.tc.outputs.gcc }}-${{ hashFiles('packaging/windows/build-mpv-windows.sh') }}-${{ steps.tc.outputs.prefix }}
+      - name: Build static mpv
+        if: steps.mpv-cache.outputs.cache-hit != 'true'
+        run: |
+          packaging/windows/build-mpv-windows.sh "${{ steps.tc.outputs.prefix }}"
+          rm -rf "${{ steps.tc.outputs.prefix }}/src"
+      - name: Save static mpv
+        if: steps.mpv-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/jimmy-mpv
+          key: ${{ steps.mpv-cache.outputs.cache-primary-key }}
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            .cargo-home/registry
+            .cargo-home/git
+          key: cargo-win64-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-win64-
+
+      - name: Build jimmy
+        run: JIMMY_MPV_PREFIX="${{ steps.tc.outputs.prefix }}" cargo build --release --locked --target x86_64-pc-windows-gnu
+
+      - name: Check the exe needs only system DLLs
+        run: |
+          exe=target/x86_64-pc-windows-gnu/release/jimmy.exe
+          objdump -p "$exe" | sed -n 's/^\s*DLL Name: //p' | tr 'A-Z' 'a-z' | sort -u | tee dlls.txt
+          ok='(kernel32|user32|gdi32|advapi32|shell32|ole32|oleaut32|combase|opengl32|ntdll|bcrypt|bcryptprimitives|avrt|dwmapi|imm32|shcore|shlwapi|uxtheme|version|userenv|ws2_32|dbghelp|winmm|comdlg32|crypt32|secur32|setupapi|cfgmgr32|hid|xinput1_4|propsys|dwrite|d3d9|d3d11|dxgi|dxva2|ucrtbase|msvcrt|api-ms-win-.*)\.dll'
+          if grep -vxE "$ok" dlls.txt; then echo "::error::jimmy.exe needs non-system DLLs (above)"; exit 1; fi
+          "./$exe" --version | cat
+
+      - name: Portable exe
+        run: |
+          mkdir -p dist
+          cp target/x86_64-pc-windows-gnu/release/jimmy.exe "dist/jimmy-${{ steps.tc.outputs.version }}-windows-x86_64-portable.exe"
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc /DAppVersion=${{ steps.tc.outputs.version }} `
+            /DSrcExe="$PWD\target\x86_64-pc-windows-gnu\release\jimmy.exe" packaging\windows\jimmy.iss
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: jimmy-windows
+          path: dist/*.exe
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------- macOS
+  # Static mpv for each arch on Apple Silicon (x86_64 is cross-compiled), then one universal app.
+  macos-mpv:
+    name: macos-mpv (${{ matrix.arch }})
+    needs: check-version
+    runs-on: macos-26
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x86_64]
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Restore static mpv
+        id: mpv-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/jimmy-mpv-${{ matrix.arch }}
+          key: mpv-macos-${{ matrix.arch }}-${{ hashFiles('packaging/macos/build-mpv-macos.sh') }}
+      - name: Install Rosetta (meson runs the cross build's x86_64 test programs)
+        if: steps.mpv-cache.outputs.cache-hit != 'true' && matrix.arch == 'x86_64'
+        run: sudo softwareupdate --install-rosetta --agree-to-license
+      - name: Build static mpv
+        if: steps.mpv-cache.outputs.cache-hit != 'true'
+        run: |
+          brew install meson nasm
+          TARGET_ARCH=${{ matrix.arch }} packaging/macos/build-mpv-macos.sh "$HOME/jimmy-mpv-${{ matrix.arch }}"
+          rm -rf "$HOME/jimmy-mpv-${{ matrix.arch }}/src"
+      - name: Save static mpv
+        if: steps.mpv-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/jimmy-mpv-${{ matrix.arch }}
+          key: ${{ steps.mpv-cache.outputs.cache-primary-key }}
+
+  macos:
+    needs: macos-mpv
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/jimmy-mpv-arm64
+          key: mpv-macos-arm64-${{ hashFiles('packaging/macos/build-mpv-macos.sh') }}
+          fail-on-cache-miss: true
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/jimmy-mpv-x86_64
+          key: mpv-macos-x86_64-${{ hashFiles('packaging/macos/build-mpv-macos.sh') }}
+          fail-on-cache-miss: true
+      - name: Install tools
+        run: |
+          sudo softwareupdate --install-rosetta --agree-to-license # smoke-test the x86_64 slice
+          brew install librsvg
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-macos-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-macos-
+      - name: Build jimmy.app
+        run: |
+          JIMMY_MPV_PREFIX_ARM64="$HOME/jimmy-mpv-arm64" JIMMY_MPV_PREFIX_X86_64="$HOME/jimmy-mpv-x86_64" \
+            packaging/macos/make-app.sh
+      - name: Build dmg
+        run: packaging/macos/make-dmg.sh && ls -l dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: jimmy-macos
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------- Publish
   release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: build
+    needs: [linux, linux-appimage, linux-flatpak, linux-smoke, windows, macos]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
+          pattern: jimmy-*
           merge-multiple: true
       - name: Checksums
-        run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+        run: cd dist && ls -l && sha256sum * > SHA256SUMS && cat SHA256SUMS
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cat > notes.md <<'EOF'
-          Linux x86_64 builds (x86-64-v2 baseline, built on Fedora ${{ env.FEDORA }}). Pick one:
+          V="${GITHUB_REF_NAME#v}"
+          cat > notes.md <<EOF
+          A lightweight, gamepad-friendly media player and library. Every build has mpv and FFmpeg
+          built in (every decoder and container), so nothing else needs to be installed.
 
-          | Build | What it is |
+          | System | Download |
           |---|---|
-          | **static** | mpv + FFmpeg built in, every decoder and container. Recommended. |
-          | **static-slim** | Same, but only common codecs and containers (H.264, HEVC, AV1, VP9, MPEG-2/4, VC-1; AAC, AC-3, DTS, TrueHD, FLAC, Opus, MP3…; MKV, MP4, AVI, TS, WebM…). Smallest. |
-          | **dynamic** | Uses the system libmpv (`mpv-libs`). Install RPM Fusion's ffmpeg for H.264/HEVC. |
+          | **Windows 10/11** (x64) | \`jimmy-$V-windows-x86_64-setup.exe\` (installer) or \`jimmy-$V-windows-x86_64-portable.exe\` (no install) |
+          | **macOS 11+** (Apple Silicon and Intel) | \`jimmy-$V-macos-universal.dmg\` |
+          | **Linux** (x86_64, glibc 2.34+: Ubuntu 22.04, Debian 12, Fedora, RHEL 9 and newer) | \`.flatpak\`, \`.AppImage\`, \`.rpm\` (Fedora/RHEL/openSUSE), or the standalone \`jimmy-$V-linux-x86_64\` executable |
 
-          Fedora: `sudo dnf install ./jimmy-*.rpm`. Other distros: unpack the tarball and run `./jimmy --install`.
+          - **Linux:** \`flatpak install --user ./jimmy-$V-x86_64.flatpak\`, or \`chmod +x\` the AppImage or the standalone file and run it (\`./jimmy-$V-linux-x86_64 --install\` adds it to the app menu). RPM: \`sudo dnf install ./jimmy-$V-*.x86_64.rpm\`.
+          - **Windows:** the installer and exe aren't code-signed, so SmartScreen may warn: choose *More info → Run anyway*.
+          - **macOS:** the app isn't notarized. After the first launch is blocked, open *System Settings → Privacy & Security* and choose *Open Anyway*, or run \`xattr -dr com.apple.quarantine /Applications/jimmy.app\`.
+
+          jimmy is MIT licensed. The release binaries include mpv (GPL-2.0-or-later), so they are distributed under the GPL; see THIRD-PARTY.md in the repository.
           EOF
+          sed -i 's/^          //' notes.md
           gh release create "$GITHUB_REF_NAME" dist/* \
-            --repo "$GITHUB_REPOSITORY" --title "jimmy ${GITHUB_REF_NAME}" --notes-file notes.md
+            --repo "$GITHUB_REPOSITORY" --title "jimmy $GITHUB_REF_NAME" --notes-file notes.md
